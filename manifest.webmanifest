@@ -3,7 +3,7 @@
   "short_name": "Big Order",
   "start_url": "ACReport.html",
   "scope": "./",
-  "display": "browser",
+  "display": "standalone",
   "background_color": "#C8102E",
   "theme_color": "#C8102E",
   "icons": [
