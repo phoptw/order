@@ -4015,6 +4015,13 @@
     let mailOrders = [];
     let unassignedOrders = [];
     let storeNameOptions = [];
+    let storeGeoMap = null; // 門市名 → {address, lat, lng};補顧客填的鄰近門市距離用
+    function geoKm(lat1, lng1, lat2, lng2) {
+      const rad = Math.PI / 180;
+      const h = Math.pow(Math.sin((lat2 - lat1) * rad / 2), 2) +
+        Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.pow(Math.sin((lng2 - lng1) * rad / 2), 2);
+      return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    }
     let mailFilter = 'all';    // 'all' | 'missing' | 'overdue'
     let mailTab = 'pending';   // 'pending' | 'unassigned'
     let unassignedHasNearest = false; // 目前的待分配清單是否已算好最近門市
@@ -4656,6 +4663,7 @@
           else onUnassignedError({ message: result ? result.error : '後端回傳空值' });
           return;
         }
+        if (result.storeGeo) storeGeoMap = result.storeGeo;
         if (keepList) {
           // 清單已經在畫面上(可能已經選了門市):不重建,補上最近門市 / 加入新的訂單
           if (nearInPlace) {
@@ -4879,6 +4887,14 @@
         const row = { name: s.match || s.name, officialName: s.name, match: s.match, km: s.km, address: s.address };
         rows.push(row);
         if (s.match) byMatch[s.match] = row;
+      });
+      // 顧客填的那家不在最近 3 家裡:用伺服器給的座標補上地址和距離
+      rows.forEach(function (r) {
+        if (!r.customer || r.km !== undefined) return;
+        const g = storeGeoMap && storeGeoMap[r.match];
+        if (!g) return;
+        r.address = g.address || r.address;
+        if (o.geo && isFinite(o.geo.lat) && isFinite(o.geo.lng)) r.km = Math.round(geoKm(o.geo.lat, o.geo.lng, g.lat, g.lng) * 10) / 10;
       });
       rows.sort(function (a, b) {
         const ra = (a.customer ? 2 : 0) + (a.km !== undefined ? 1 : 0);
@@ -5138,6 +5154,7 @@
         const a = card._assign;
         a.order.nearest = o.nearest;
         a.order.nearestNote = o.nearestNote;
+        a.order.geo = o.geo;
         const old = card.querySelector('.sugg-block');
         if (old) old.remove();
         const sug = makeSuggestions(a.order, a.select);
