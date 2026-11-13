@@ -1941,10 +1941,146 @@
       font-size: 13px;
       color: var(--text-3);
     }
+    /* ===== 寄信助手:已寄出 ===== */
     .sent-hint {
-      margin: 0 0 4px;
+      grid-column: 1 / -1;
+      margin: 0;
       font-size: 13px;
+      line-height: 1.5;
       color: var(--text-3);
+    }
+
+    .sent-day {
+      grid-column: 1 / -1;
+      margin: 8px 0 -4px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sent-day::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .sent-day .n {
+      font-weight: 600;
+      color: var(--text-3);
+    }
+
+    .card.sent-card {
+      padding: 14px 16px;
+    }
+
+    .card.sent-card::before {
+      display: none;
+    }
+
+    .sent-card .card-title {
+      font-size: 16px;
+    }
+
+    .sent-time {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--green);
+      background: var(--green-soft);
+      border-radius: 20px;
+      padding: 3px 9px;
+      white-space: nowrap;
+    }
+
+    .sent-meta {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px 14px;
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .sent-meta b {
+      font-weight: 600;
+      color: var(--text-3);
+      margin-right: 4px;
+    }
+
+    .sent-foot {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .sent-ac {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--amber);
+      background: var(--amber-soft);
+      border-radius: 20px;
+      padding: 3px 9px;
+    }
+
+    .sent-ac.none {
+      color: var(--text-3);
+      background: transparent;
+      padding-left: 0;
+      font-weight: 500;
+    }
+
+    .revert-btn {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--surface);
+      color: var(--text-2);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .revert-btn:hover:not(:disabled) {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .revert-btn:disabled {
+      opacity: .55;
+      cursor: default;
+    }
+
+    #mailTabRow.segmented {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    @media (max-width: 400px) {
+      #mailTabRow .seg-btn {
+        font-size: 14px;
+        gap: 4px;
+      }
+
+      #mailTabRow .count {
+        min-width: 18px;
+        padding: 1px 5px;
+      }
     }
 
     .near-list+.near-note {
@@ -2079,6 +2215,10 @@
 
       .toolbar .segmented {
         flex: 0 0 320px;
+      }
+
+      .toolbar #mailTabRow.segmented {
+        flex-basis: 420px;
       }
 
       .toolbar .search {
@@ -4636,43 +4776,87 @@
       }));
     }
 
+    let sentOrders = [];
+    let sentDays = 14;
     function renderSentList(orders, days) {
+      sentOrders = orders;
+      sentDays = days;
       const list = $('sentList');
       list.innerHTML = '';
       if (!orders.length) {
         showState('sentList', '📭', '最近 ' + days + ' 天沒有標記寄出的訂單', '');
         return;
       }
-      list.appendChild(el('p', 'sent-hint', '最近 ' + days + ' 天標記寄出的訂單（新的在上面）。標記了但其實沒寄出，可以退回「待寄送」重寄。'));
-      orders.forEach(function (o) { list.appendChild(buildSentCard(o)); });
+      list.appendChild(el('p', 'sent-hint', '最近 ' + days + ' 天標記寄出的訂單。標記了但其實沒寄出，按「退回待寄送」重寄。'));
+      // 依寄出日期分組:今天 / 昨天 / 11/10(週一)
+      let lastDay = '';
+      let dayHead = null, dayCount = 0;
+      orders.forEach(function (o) {
+        const day = sentDayLabel(o);
+        if (day !== lastDay) {
+          lastDay = day;
+          dayCount = 0;
+          dayHead = el('div', 'sent-day', day);
+          dayHead.appendChild(el('span', 'n', ''));
+          list.appendChild(dayHead);
+        }
+        dayCount++;
+        dayHead.querySelector('.n').textContent = dayCount + ' 筆';
+        list.appendChild(buildSentCard(o));
+      });
+    }
+
+    // 台灣時間的日期標籤
+    function sentDayLabel(o) {
+      if (typeof o.sentMs !== 'number') return '其他';
+      const tw = function (ms) { const d = new Date(ms + 8 * 3600e3); return [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCDay()]; };
+      const d = tw(o.sentMs), t = tw(Date.now()), y = tw(Date.now() - 86400e3);
+      if (d[0] === t[0] && d[1] === t[1] && d[2] === t[2]) return '今天';
+      if (d[0] === y[0] && d[1] === y[1] && d[2] === y[2]) return '昨天';
+      return d[1] + '/' + d[2] + '（週' + '日一二三四五六'[d[3]] + '）';
     }
 
     function buildSentCard(o) {
-      const card = el('article', 'card');
+      const card = el('article', 'card sent-card');
       card.id = 'sent-' + orderKey(o);
       const head = el('div', 'card-head');
       head.appendChild(el('h3', 'card-title', o.storeName));
-      if (o.nodeStatus) {
-        const badges = el('div', 'badges');
-        badges.appendChild(el('span', 'badge ok', 'AC：' + o.nodeStatus));
-        head.appendChild(badges);
-      }
+      const when = el('span', 'sent-time');
+      when.appendChild(iconEl('check', 'ic-sm'));
+      when.appendChild(document.createTextNode((timeAgo(o.sentMs) || '') + '寄出'));
+      when.title = '標記寄出於 ' + o.sentAt;
+      head.appendChild(when);
       card.appendChild(head);
-      const sub = el('div', 'card-sub');
-      sub.appendChild(iconEl('mail', 'ic-sm'));
-      const ago = timeAgo(o.sentMs);
-      sub.appendChild(document.createTextNode((o.orderId ? o.orderId + '・' : '') + '標記寄出於 ' + o.sentAt + (ago ? '・' + ago : '')));
-      card.appendChild(sub);
-      if (o.diningDate) card.appendChild(el('div', 'card-sub', '用餐日期 ' + o.diningDate));
-      const actions = el('div', 'actions');
-      const btn = el('button', 'btn btn-secondary btn-small btn-block');
+
+      const meta = el('div', 'sent-meta');
+      function metaItem(label, value) {
+        if (!value) return;
+        const s = el('span');
+        s.appendChild(el('b', null, label));
+        s.appendChild(document.createTextNode(value));
+        meta.appendChild(s);
+      }
+      metaItem('訂單', o.orderId);
+      metaItem('寄出', String(o.sentAt || '').replace(/:\d{2}$/, ''));
+      metaItem('用餐', o.diningDate);
+      card.appendChild(meta);
+
+      const foot = el('div', 'sent-foot');
+      foot.appendChild(o.nodeStatus ? el('span', 'sent-ac', 'AC 已回報：' + o.nodeStatus) : el('span', 'sent-ac none', 'AC 尚未回報'));
+      const btn = el('button', 'revert-btn');
       btn.type = 'button';
-      btn.textContent = '沒寄出，退回待寄送';
+      setRevertLabel(btn, false);
       btn.disabled = !o.orderId && typeof o.submitTimeKey !== 'number';
       btn.addEventListener('click', function () { revertSent(o, btn, card); });
-      actions.appendChild(btn);
-      card.appendChild(actions);
+      foot.appendChild(btn);
+      card.appendChild(foot);
       return card;
+    }
+
+    function setRevertLabel(btn, busy) {
+      btn.innerHTML = '';
+      btn.appendChild(iconEl('undo', 'ic-sm'));
+      btn.appendChild(document.createTextNode(busy ? '退回中…' : '退回待寄送'));
     }
 
     function revertSent(order, btn, card) {
@@ -4680,10 +4864,10 @@
       if (order.nodeStatus) msg += '\n\n注意：AC 已經回報「' + order.nodeStatus + '」，門市可能其實已經收到信了。';
       if (!confirm(msg)) return;
       btn.disabled = true;
-      btn.textContent = '退回中…';
+      setRevertLabel(btn, true);
       function reset() {
         btn.disabled = false;
-        btn.textContent = '沒寄出，退回待寄送';
+        setRevertLabel(btn, false);
       }
       gasCall('unmarkAsSent', Object.assign({ operationTime: order.sentAt }, orderRef(order)))
         .then(function (res) {
@@ -4694,7 +4878,11 @@
           }
           noteMovedIn('pending', order);
           invalidateReport();
-          removeCard(card, 'sentList', function () { showState('sentList', '📭', '最近沒有標記寄出的訂單', ''); });
+          // 卡片淡出後重畫(日期分組的筆數一起更新)
+          const k = orderKey(order);
+          sentOrders = sentOrders.filter(function (x) { return orderKey(x) !== k; });
+          card.classList.add('removing');
+          setTimeout(function () { renderSentList(sentOrders, sentDays); }, 380);
           showToast('已退回「待寄送」：' + order.storeName);
           loadPending();
         })
