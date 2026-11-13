@@ -1941,6 +1941,11 @@
       font-size: 13px;
       color: var(--text-3);
     }
+    .sent-hint {
+      margin: 0 0 4px;
+      font-size: 13px;
+      color: var(--text-3);
+    }
 
     .near-list+.near-note {
       font-size: 12px;
@@ -2206,6 +2211,7 @@
         <div class="segmented" id="mailTabRow" role="tablist">
           <button class="seg-btn active" data-tab="pending" role="tab">待寄送 <span class="count" id="pendingTabCount">0</span></button>
           <button class="seg-btn" data-tab="unassigned" role="tab">待分配門市 <span class="count" id="unassignedTabCount">0</span></button>
+          <button class="seg-btn" data-tab="sent" role="tab">已寄出</button>
         </div>
         <div class="mail-controls" id="mailPendingControls">
           <label class="search">
@@ -2221,6 +2227,7 @@
       </div>
       <main class="list" id="mailList"></main>
       <main class="list" id="unassignedList" hidden></main>
+      <main class="list" id="sentList" hidden></main>
       <!-- 選好門市的訂單一次指派 -->
       <div class="bulk-bar" id="bulkAssignBar" hidden>
         <span class="bulk-text" id="bulkAssignText"></span>
@@ -2243,7 +2250,7 @@
     // 標記帶同一個 markToken、撤銷核對標記時間、指派與更新狀態遇到「已經是要存的值」直接算成功
     // (操作紀錄 logAcAction 重送會多一列,不重試;退回待分配 unassignStore 也不重試:
     //  第一次其實成功、期間別人又指派回同一家時,重送會把新的指派退掉,改成提示並重新讀取)
-    const RETRYABLE_ACTIONS = ['login', 'getReport', 'getOrdersForAc', 'getPendingOrders', 'getUnassignedOrders',
+    const RETRYABLE_ACTIONS = ['login', 'getReport', 'getOrdersForAc', 'getPendingOrders', 'getUnassignedOrders', 'getRecentSent',
       'markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'updateNodeStatus'];
     const WRITE_ACTIONS = ['markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'unassignStore', 'updateNodeStatus'];
     // 等多久沒回應就中斷(手機網路卡住時按鈕不會一直停在處理中)
@@ -4055,11 +4062,14 @@
       const isPending = tab === 'pending';
       $('mailPendingControls').hidden = !isPending;
       $('mailList').hidden = !isPending;
-      $('unassignedList').hidden = isPending;
+      $('unassignedList').hidden = tab !== 'unassigned';
+      $('sentList').hidden = tab !== 'sent';
       updateBulkBar();
       window.scrollTo(0, 0);
       // 第一次打開「待分配門市」才查最近門市
-      if (!isPending && mailLoaded && !unassignedHasNearest && !unassignedBusy) loadUnassigned();
+      if (tab === 'unassigned' && mailLoaded && !unassignedHasNearest && !unassignedBusy) loadUnassigned();
+      // 「已寄出」每次打開都重新讀(標記完成後才會出現在這裡)
+      if (tab === 'sent' && mailLoaded) loadSent();
     }
 
     function resetMail() {
@@ -4070,6 +4080,7 @@
       unassignedBusy = false;
       mailCounts.pending = null;
       mailCounts.unassigned = null;
+      $('sentList').innerHTML = '';
       clearTimeout(mailLoadingTimeout);
       clearTimeout(unassignedLoadingTimeout);
       mailFilter = 'all';
@@ -4112,6 +4123,7 @@
       stale.mail = false;
       loadPending();
       loadUnassigned();
+      if (mailTab === 'sent') loadSent();
     }
 
     function timeAgo(ms) {
@@ -4602,6 +4614,95 @@
           if (err && err.retryable) {
             alert('退回失敗: ' + err.message + '\n無法確認是否已退回，清單會重新讀取，顯示目前的實際狀態');
             reloadAfterUnsureWrite();
+            return;
+          }
+          alert('退回失敗: ' + err.message);
+          reset();
+        });
+    }
+
+    // ----- 已寄出(最近 14 天):標記了但其實沒寄出,可以退回待寄送 -----
+    function loadSent() {
+      showSkeleton('sentList');
+      const fresh = latestOnly('sent');
+      gasCall('getRecentSent').then(fresh(function (result) {
+        if (!result || !result.success) {
+          showError('sentList', result ? result.error : '後端回傳空值', loadSent);
+          return;
+        }
+        renderSentList(result.orders || [], result.days || 14);
+      })).catch(fresh(function (err) {
+        showError('sentList', err && err.message ? err.message : String(err), loadSent);
+      }));
+    }
+
+    function renderSentList(orders, days) {
+      const list = $('sentList');
+      list.innerHTML = '';
+      if (!orders.length) {
+        showState('sentList', '📭', '最近 ' + days + ' 天沒有標記寄出的訂單', '');
+        return;
+      }
+      list.appendChild(el('p', 'sent-hint', '最近 ' + days + ' 天標記寄出的訂單（新的在上面）。標記了但其實沒寄出，可以退回「待寄送」重寄。'));
+      orders.forEach(function (o) { list.appendChild(buildSentCard(o)); });
+    }
+
+    function buildSentCard(o) {
+      const card = el('article', 'card');
+      card.id = 'sent-' + orderKey(o);
+      const head = el('div', 'card-head');
+      head.appendChild(el('h3', 'card-title', o.storeName));
+      if (o.nodeStatus) {
+        const badges = el('div', 'badges');
+        badges.appendChild(el('span', 'badge ok', 'AC：' + o.nodeStatus));
+        head.appendChild(badges);
+      }
+      card.appendChild(head);
+      const sub = el('div', 'card-sub');
+      sub.appendChild(iconEl('mail', 'ic-sm'));
+      const ago = timeAgo(o.sentMs);
+      sub.appendChild(document.createTextNode((o.orderId ? o.orderId + '・' : '') + '標記寄出於 ' + o.sentAt + (ago ? '・' + ago : '')));
+      card.appendChild(sub);
+      if (o.diningDate) card.appendChild(el('div', 'card-sub', '用餐日期 ' + o.diningDate));
+      const actions = el('div', 'actions');
+      const btn = el('button', 'btn btn-secondary btn-small btn-block');
+      btn.type = 'button';
+      btn.textContent = '沒寄出，退回待寄送';
+      btn.disabled = !o.orderId && typeof o.submitTimeKey !== 'number';
+      btn.addEventListener('click', function () { revertSent(o, btn, card); });
+      actions.appendChild(btn);
+      card.appendChild(actions);
+      return card;
+    }
+
+    function revertSent(order, btn, card) {
+      let msg = '要把「' + order.storeName + '」' + (order.orderId ? '（' + order.orderId + '）' : '') + '退回「待寄送」嗎？\n\n退回後會出現在「待寄送」，請重新寄信再標記完成。';
+      if (order.nodeStatus) msg += '\n\n注意：AC 已經回報「' + order.nodeStatus + '」，門市可能其實已經收到信了。';
+      if (!confirm(msg)) return;
+      btn.disabled = true;
+      btn.textContent = '退回中…';
+      function reset() {
+        btn.disabled = false;
+        btn.textContent = '沒寄出，退回待寄送';
+      }
+      gasCall('unmarkAsSent', Object.assign({ operationTime: order.sentAt }, orderRef(order)))
+        .then(function (res) {
+          if (!res || !res.success) {
+            alert('退回失敗: ' + (res ? res.error : '未知錯誤') + '\n清單會重新讀取，顯示目前的實際狀態');
+            loadSent();
+            return;
+          }
+          noteMovedIn('pending', order);
+          invalidateReport();
+          removeCard(card, 'sentList', function () { showState('sentList', '📭', '最近沒有標記寄出的訂單', ''); });
+          showToast('已退回「待寄送」：' + order.storeName);
+          loadPending();
+        })
+        .catch(function (err) {
+          if (err && err.retryable) {
+            alert('退回失敗: ' + err.message + '\n無法確認是否已退回，清單會重新讀取，顯示目前的實際狀態');
+            loadSent();
+            loadPending();
             return;
           }
           alert('退回失敗: ' + err.message);
