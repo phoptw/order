@@ -4842,7 +4842,13 @@
       card.appendChild(meta);
 
       const foot = el('div', 'sent-foot');
-      foot.appendChild(o.nodeStatus ? el('span', 'sent-ac', 'AC 已回報：' + o.nodeStatus) : el('span', 'sent-ac none', 'AC 尚未回報'));
+      let acTag;
+      if (o.nodeStatus) acTag = el('span', 'sent-ac', 'AC 已回報：' + o.nodeStatus);
+      else if (o.nodeOther) {
+        acTag = el('span', 'sent-ac none', '節點欄：' + o.nodeOther);
+        acTag.title = '節點狀態欄裡填的不是 AC 的進度（可能是試算表上手動填的），AC 還沒在系統回報';
+      } else acTag = el('span', 'sent-ac none', 'AC 尚未回報');
+      foot.appendChild(acTag);
       const btn = el('button', 'revert-btn');
       btn.type = 'button';
       setRevertLabel(btn, false);
