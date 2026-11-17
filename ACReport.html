@@ -3297,9 +3297,15 @@
 
     $('logoutBtn').addEventListener('click', function () {
       if (!confirm('確定要登出嗎？下次要重新收驗證碼登入。')) return;
-      logAction('登出', '');
-      // 伺服器那邊的登入憑證也作廢(失敗也沒關係,本機已經刪掉)
-      if (sessionToken) gasCall('logout').catch(function () { });
+      // 登出紀錄、伺服器那邊的登入憑證作廢:直接送出、不列入「進行中的請求」
+      // (showLogin 會中斷所有進行中的請求,用 gasCall 送的話登出會被自己取消);keepalive:頁面關掉也會送完
+      // 只送一個請求,伺服器作廢憑證並記「登出」;送不出去也沒關係,本機的憑證已經刪掉
+      if (sessionToken) {
+        try {
+          fetch(API_BASE_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'logout', session: sessionToken, acEmail: currentAc }), keepalive: true }).catch(function () { });
+        } catch (e) { /* 同上 */ }
+      }
       showLogin('');
     });
 
@@ -4594,7 +4600,8 @@
       return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
     }
     let mailFilter = 'all';    // 'all' | 'missing' | 'overdue'
-    let mailTab = 'pending';   // 'pending' | 'unassigned'
+    let mailTab = 'pending';   // 'pending' | 'unassigned' | 'sent'
+    const ASSIGN_BATCH_MAX = 100; // 「一次指派」每次最多幾筆(跟後端 assignStores 的上限一樣)
     let unassignedHasNearest = false; // 目前的待分配清單是否已算好最近門市
     let unassignedBusy = false;
     let mailLoadingTimeout;
@@ -5923,18 +5930,19 @@
       const bar = $('bulkAssignBar');
       bar.hidden = mailTab !== 'unassigned' || !items.length;
       if (bar.hidden) return;
-      $('bulkAssignText').textContent = '已選好 ' + items.length + ' 筆門市';
+      $('bulkAssignText').textContent = '已選好 ' + items.length + ' 筆門市' +
+        (items.length > ASSIGN_BATCH_MAX ? '（一次最多送 ' + ASSIGN_BATCH_MAX + ' 筆，送完再按一次）' : '');
       const btn = $('bulkAssignBtn');
       btn.disabled = false;
       btn.innerHTML = svg('store');
-      btn.appendChild(document.createTextNode('一次指派 ' + items.length + ' 筆'));
+      btn.appendChild(document.createTextNode('一次指派 ' + Math.min(items.length, ASSIGN_BATCH_MAX) + ' 筆'));
     }
 
     $('bulkAssignBtn').addEventListener('click', bulkAssign);
 
-    // 一次送出所有選好門市的訂單(只打一次 API);每筆各自成功或失敗
+    // 一次送出選好門市的訂單(只打一次 API,最多 ASSIGN_BATCH_MAX 筆,跟後端上限一樣;多的留著再按一次);每筆各自成功或失敗
     function bulkAssign() {
-      const items = pendingAssignments();
+      const items = pendingAssignments().slice(0, ASSIGN_BATCH_MAX);
       if (!items.length) return;
       const bar = $('bulkAssignBtn');
       bar.disabled = true;
