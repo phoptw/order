@@ -267,6 +267,83 @@
       white-space: pre-wrap;
     }
 
+    .login-field {
+      width: 100%;
+      height: 52px;
+      padding: 0 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      font-size: 17px;
+    }
+
+    .login-field:focus {
+      outline: none;
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px var(--blue-soft);
+    }
+
+    .login-field.code {
+      text-align: center;
+      font-size: 24px;
+      letter-spacing: .4em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .login-sent {
+      font-size: 14px;
+      color: var(--text-2);
+      margin-bottom: 10px;
+      line-height: 1.5;
+    }
+
+    .login-sent b {
+      color: var(--text);
+      word-break: break-all;
+    }
+
+    .login-info {
+      color: var(--green);
+      font-size: 14px;
+      margin: -4px 0 8px;
+      white-space: pre-wrap;
+    }
+
+    .login-info:empty {
+      display: none;
+    }
+
+    .role-choices {
+      display: grid;
+      gap: 8px;
+    }
+
+    .login-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px 16px;
+      margin-top: 14px;
+    }
+
+    .link-btn {
+      border: 0;
+      background: none;
+      color: var(--blue);
+      font-size: 14px;
+      padding: 6px 2px;
+      cursor: pointer;
+    }
+
+    .link-btn:disabled {
+      color: var(--text-3);
+      cursor: default;
+    }
+
+    .link-btn.muted {
+      color: var(--text-3);
+    }
+
     /* ===== 按鈕 ===== */
     .btn {
       display: inline-flex;
@@ -2258,17 +2335,39 @@
 <body class="logged-out">
   <!-- 登入畫面 -->
   <main id="loginPanel" class="login">
-    <form id="loginForm" class="login-card" autocomplete="on">
+    <!-- 登入:公司信箱收 6 位數驗證碼(管理員另有密碼備用) -->
+    <form id="loginForm" class="login-card" autocomplete="on" novalidate>
       <div class="login-badge" data-icon="lock"></div>
       <h1>Big Order 管理系統</h1>
-      <p>請輸入你的專屬密碼。登入後這個裝置會記住，下次不用再輸入。</p>
-      <div class="pw-wrap">
-        <input type="password" id="pwInput" autocomplete="current-password" autocapitalize="off" autocorrect="off"
-          spellcheck="false" placeholder="密碼" aria-label="密碼">
-        <button type="button" class="pw-toggle" id="pwToggle" aria-label="顯示密碼" data-icon="eye"></button>
+      <p id="loginIntro">輸入公司信箱，系統會寄 6 位數驗證碼給你。登入後這個裝置會記住 30 天。</p>
+      <div id="stepEmail">
+        <input type="email" class="login-field" id="emailInput" autocomplete="username" inputmode="email" autocapitalize="off"
+          autocorrect="off" spellcheck="false" placeholder="name@pizzahut.com.tw" aria-label="公司信箱">
+      </div>
+      <div id="stepCode" hidden>
+        <div class="login-sent" id="codeSentTo"></div>
+        <input type="text" class="login-field code" id="codeInput" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+          placeholder="••••••" aria-label="6 位數驗證碼">
+      </div>
+      <div id="stepRole" hidden>
+        <div class="login-sent">這個信箱有兩個身分，請選擇這次要用哪一個登入：</div>
+        <div class="role-choices" id="roleChoices"></div>
+      </div>
+      <div id="stepPw" hidden>
+        <div class="pw-wrap">
+          <input type="password" id="pwInput" autocomplete="current-password" autocapitalize="off" autocorrect="off"
+            spellcheck="false" placeholder="管理員密碼" aria-label="管理員密碼">
+          <button type="button" class="pw-toggle" id="pwToggle" aria-label="顯示密碼" data-icon="eye"></button>
+        </div>
       </div>
       <div class="login-error" id="loginError" role="alert"></div>
-      <button type="submit" class="btn btn-primary btn-block" id="loginBtn">登入</button>
+      <div class="login-info" id="loginInfo" role="status"></div>
+      <button type="submit" class="btn btn-primary btn-block" id="loginBtn">寄驗證碼</button>
+      <div class="login-links">
+        <button type="button" class="link-btn" id="resendBtn" hidden>重寄驗證碼</button>
+        <button type="button" class="link-btn" id="changeEmailBtn" hidden>換一個信箱</button>
+        <button type="button" class="link-btn muted" id="pwModeBtn">管理員密碼登入</button>
+      </div>
     </form>
   </main>
 
@@ -2293,10 +2392,10 @@
             <div class="identity-sub" id="identitySub"></div>
           </div>
         </div>
-        <!-- 手機通知(網頁推播;目前只有管理員) -->
+        <!-- 手機通知(網頁推播;管理員、AC) -->
         <div class="push-panel" id="pushPanel" hidden>
           <div class="push-text">
-            <div class="push-title">這支手機的新訂單通知</div>
+            <div class="push-title">這支手機的訂單通知</div>
             <div class="push-sub" id="pushStatus"></div>
           </div>
           <div class="push-actions" id="pushActions"></div>
@@ -2438,7 +2537,9 @@
       let tHead = 0;
       let bytes = 0;
       const session = sessionSeq;
-      const body = Object.assign({ action: action, pw: password }, params || {});
+      // 登入後只帶 session(登入憑證);管理員用密碼登入的那一次才帶密碼
+      const cred = sessionToken ? { session: sessionToken } : (password ? { pw: password } : {});
+      const body = Object.assign({ action: action }, cred, params || {});
       const isWrite = WRITE_ACTIONS.indexOf(action) !== -1;
       const limit = isWrite ? WRITE_TIMEOUT_MS : READ_TIMEOUT_MS;
       const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -2487,7 +2588,7 @@
       }).then(function (res) {
         if (session !== sessionSeq) return NEVER();
         if (res && res.authError) {
-          showLogin(res.error && res.error !== '密碼錯誤' ? res.error : '密碼錯誤或已失效，請重新輸入');
+          showLogin(res.error || '登入已過期，請重新登入');
           return NEVER();
         }
         return res;
@@ -2613,6 +2714,9 @@
     STATUS_CLASS[STATUS_NOT_ORDERED] = 'talking';
     STATUS_CLASS[STATUS_WON] = 'won';
     STATUS_CLASS[STATUS_LOST] = 'lost';
+    // 登入憑證(session)存在這台裝置;密碼不再存。舊版存的密碼第一次打開時換成 session 後刪掉
+    const SESSION_STORAGE_KEY = 'bo_session';
+    const EMAIL_STORAGE_KEY = 'bo_login_email';
     const PW_STORAGE_KEY = 'ac_report_pw';
     // 合併前「訂單寄信助手」頁記住的管理員密碼,第一次打開時搬過來
     const LEGACY_PW_STORAGE_KEY = 'mobile_sidebar_pw';
@@ -2628,7 +2732,8 @@
 
     // ===== 狀態 =====
     let role = '';            // 'ac' | 'rc' | 'admin'
-    let password = '';
+    let password = '';     // 只有管理員用密碼登入的那一次會用到,登入後換成 sessionToken
+    let sessionToken = ''; // 登入憑證
     let view = 'detail';      // 'report' | 'detail' | 'mail'(管理員)
     let currentAc = '';
     let allOrders = [];
@@ -2775,8 +2880,12 @@
           ? 'iPhone 要先用 Safari 把這個網頁「加入主畫面」，再從主畫面的圖示打開，才能開啟通知（iOS 16.4 以上）。'
           : '這個瀏覽器不支援網頁通知，請改用 Chrome、Edge 或 Safari。',
         denied: '之前拒絕了通知權限。請到瀏覽器或手機設定裡，把這個網站的通知改成「允許」，再回來按一次開啟。',
-        off: '還沒開啟。開啟後，有新訂單要處理時，這支手機會跳通知（內容只有筆數）。',
-        on: '已開啟。有新訂單要處理時，這支手機會跳通知。',
+        off: role === 'ac'
+          ? '還沒開啟。開啟後，管理員把新訂單寄給你的門市時、以及每天 9 點還有沒聯繫的訂單時，這支手機會跳通知（不含顧客資料）。'
+          : '還沒開啟。開啟後，有新訂單要處理時，這支手機會跳通知（內容只有筆數）。',
+        on: role === 'ac'
+          ? '已開啟。有新訂單寄給你的門市、或每天 9 點還有沒聯繫的訂單時，這支手機會跳通知。晚上 8 點到早上 7 點不會通知。'
+          : '已開啟。有新訂單要處理時，這支手機會跳通知。',
         busy: '處理中…'
       };
       $('pushStatus').textContent = texts[state] || '';
@@ -2843,7 +2952,7 @@
 
     function disablePush() {
       if (!pushSub || pushBusy) return;
-      if (!confirm('要關閉這支手機的新訂單通知嗎？')) return;
+      if (!confirm('要關閉這支手機的訂單通知嗎？')) return;
       pushBusy = true;
       renderPush('busy');
       const sub = pushSub;
@@ -2873,6 +2982,11 @@
     if (PUSH_SUPPORTED) {
       navigator.serviceWorker.addEventListener('message', function (e) {
         if (e.data && e.data.type === 'openMail' && role === 'admin') setView('mail');
+        // AC 點了「新訂單 / 還沒聯繫」通知:回到訂單明細並重新讀取
+        if (e.data && e.data.type === 'openOrders' && role === 'ac' && currentAc) {
+          setView('detail');
+          loadOrders(currentAc);
+        }
       });
     }
 
@@ -2884,14 +2998,172 @@
       logAction('切換查看 AC', ac);
     });
 
-    $('loginForm').addEventListener('submit', function (e) {
-      e.preventDefault();
-      const pw = $('pwInput').value.trim();
-      if (!pw) {
-        $('loginError').textContent = '請輸入密碼';
+    // ===== 登入畫面:信箱 → 驗證碼(→ 兩個身分時選一個);管理員可改用密碼 =====
+    let loginStep = 'email'; // 'email' | 'code' | 'role' | 'pw'
+    let loginEmail = '';
+    let resendTimer = null;
+    const LOGIN_BTN_TEXT = { email: '寄驗證碼', code: '登入', role: '登入', pw: '登入' };
+
+    function setLoginStep(step) {
+      loginStep = step;
+      $('stepEmail').hidden = step !== 'email';
+      $('stepCode').hidden = step !== 'code';
+      $('stepRole').hidden = step !== 'role';
+      $('stepPw').hidden = step !== 'pw';
+      $('loginBtn').hidden = step === 'role';
+      $('loginBtn').textContent = LOGIN_BTN_TEXT[step];
+      $('loginBtn').disabled = false;
+      $('resendBtn').hidden = step !== 'code';
+      $('changeEmailBtn').hidden = step !== 'code' && step !== 'role';
+      $('pwModeBtn').textContent = step === 'pw' ? '改用信箱驗證碼登入' : '管理員密碼登入';
+      $('pwModeBtn').hidden = step === 'code' || step === 'role';
+      $('loginIntro').textContent = step === 'pw'
+        ? '管理員備用登入：請輸入管理員密碼。'
+        : '輸入公司信箱，系統會寄 6 位數驗證碼給你。登入後這個裝置會記住 30 天。';
+      if (step !== 'code') clearInterval(resendTimer);
+      const focus = { email: 'emailInput', code: 'codeInput', pw: 'pwInput' }[step];
+      if (focus) setTimeout(function () { try { $(focus).focus(); } catch (e) { } }, 0);
+    }
+
+    function loginMsg(err, info) {
+      $('loginError').textContent = err || '';
+      $('loginInfo').textContent = info || '';
+    }
+
+    // 重寄要等 60 秒(後端也擋)
+    function startResendCountdown() {
+      let left = 60;
+      const btn = $('resendBtn');
+      clearInterval(resendTimer);
+      btn.disabled = true;
+      btn.textContent = '重寄驗證碼（' + left + '）';
+      resendTimer = setInterval(function () {
+        left--;
+        if (left <= 0) {
+          clearInterval(resendTimer);
+          btn.disabled = false;
+          btn.textContent = '重寄驗證碼';
+        } else {
+          btn.textContent = '重寄驗證碼（' + left + '）';
+        }
+      }, 1000);
+    }
+
+    function requestCode() {
+      const email = $('emailInput').value.trim().toLowerCase();
+      if (!/^[^@\s;,]+@[^@\s;,]+\.[^@\s;,]+$/.test(email)) {
+        loginMsg('請輸入完整的公司信箱，例如 name@pizzahut.com.tw');
         return;
       }
-      login(pw, false);
+      const btn = $('loginBtn');
+      btn.disabled = true;
+      btn.textContent = '寄送中…';
+      $('resendBtn').disabled = true;
+      loginMsg('');
+      gasCall('requestLoginCode', { email: email }).then(function (res) {
+        btn.disabled = false;
+        if (!res || !res.success) {
+          btn.textContent = LOGIN_BTN_TEXT[loginStep];
+          $('resendBtn').disabled = false;
+          loginMsg(res ? res.error : '後端回傳空值');
+          return;
+        }
+        loginEmail = email;
+        try { localStorage.setItem(EMAIL_STORAGE_KEY, email); } catch (e) { }
+        $('codeSentTo').innerHTML = '';
+        $('codeSentTo').appendChild(document.createTextNode('驗證碼已寄到 '));
+        $('codeSentTo').appendChild(el('b', null, email));
+        $('codeSentTo').appendChild(document.createTextNode('，10 分鐘內有效。'));
+        $('codeInput').value = '';
+        setLoginStep('code');
+        loginMsg('', res.message || '');
+        startResendCountdown();
+        // 自動測試用(只有測試專案會回傳)
+        if (res.testCode) $('codeInput').dataset.testCode = res.testCode;
+      }).catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = LOGIN_BTN_TEXT[loginStep];
+        $('resendBtn').disabled = false;
+        loginMsg(err.message);
+      });
+    }
+
+    function verifyCode(asRole) {
+      const code = $('codeInput').value.replace(/\s/g, '');
+      if (!/^\d{6}$/.test(code)) {
+        loginMsg('請輸入信裡的 6 位數驗證碼');
+        return;
+      }
+      sessionSeq++;
+      const btn = $('loginBtn');
+      btn.disabled = true;
+      btn.textContent = '驗證中…';
+      loginMsg('');
+      const params = { email: loginEmail, code: code, withInitial: location.hash === '#mail' ? 'none' : 'report' };
+      if (asRole) params.as = asRole;
+      gasCall('verifyLoginCode', params).then(function (res) {
+        btn.disabled = false;
+        btn.textContent = LOGIN_BTN_TEXT[loginStep];
+        if (!res || !res.success) {
+          if (loginStep === 'role') setLoginStep('code');
+          loginMsg(res ? res.error : '後端回傳空值');
+          return;
+        }
+        if (res.chooseRole) {
+          const box = $('roleChoices');
+          box.innerHTML = '';
+          (res.roles || []).forEach(function (r) {
+            const b = el('button', 'btn btn-secondary btn-block', r.label);
+            b.type = 'button';
+            b.addEventListener('click', function () { verifyCode(r.key); });
+            box.appendChild(b);
+          });
+          setLoginStep('role');
+          loginMsg('');
+          return;
+        }
+        applyLogin(res, false);
+      }).catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = LOGIN_BTN_TEXT[loginStep];
+        loginMsg(err.message);
+      });
+    }
+
+    $('loginForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (loginStep === 'email') requestCode();
+      else if (loginStep === 'code') verifyCode();
+      else if (loginStep === 'pw') {
+        const pw = $('pwInput').value.trim();
+        if (!pw) {
+          loginMsg('請輸入密碼');
+          return;
+        }
+        login(pw, false);
+      }
+    });
+
+    // 驗證碼輸入滿 6 碼就直接登入(從信裡複製貼上也一樣)
+    $('codeInput').addEventListener('input', function () {
+      const v = this.value.replace(/\D/g, '').slice(0, 6);
+      if (v !== this.value) this.value = v;
+      if (v.length === 6 && loginStep === 'code' && !$('loginBtn').disabled) verifyCode();
+    });
+
+    $('resendBtn').addEventListener('click', function () {
+      $('emailInput').value = loginEmail;
+      requestCode();
+    });
+
+    $('changeEmailBtn').addEventListener('click', function () {
+      setLoginStep('email');
+      loginMsg('');
+    });
+
+    $('pwModeBtn').addEventListener('click', function () {
+      setLoginStep(loginStep === 'pw' ? 'email' : 'pw');
+      loginMsg('');
     });
 
     $('pwToggle').addEventListener('click', function () {
@@ -2903,8 +3175,10 @@
     });
 
     $('logoutBtn').addEventListener('click', function () {
-      if (!confirm('確定要登出嗎？下次需要重新輸入密碼。')) return;
+      if (!confirm('確定要登出嗎？下次要重新收驗證碼登入。')) return;
       logAction('登出', '');
+      // 伺服器那邊的登入憑證也作廢(失敗也沒關係,本機已經刪掉)
+      if (sessionToken) gasCall('logout').catch(function () { });
       showLogin('');
     });
 
@@ -2960,19 +3234,21 @@
     // (後端依密碼決定記在誰名下;參數裡的 action/detail 改用 logAction/detail 避免跟
     //  gasCall 自己的 action 分派參數撞名)
     function logAction(action, detail) {
-      if (!password) return;
+      if (!password && !sessionToken) return;
       gasCall('logAcAction', { acEmail: currentAc, logAction: action, detail: detail || '' }).catch(function () { });
     }
 
     // ===== 登入 / 登出 =====
     // 身份由密碼決定:AC 只看自己名下訂單;RC 看自己負責的 AC(唯讀)+ 報表;管理員看全部 + 報表
+    // pw:管理員密碼登入;沒有 pw = 用這台裝置記住的登入憑證(session)
     function login(pw, fromStorage) {
       sessionSeq++;
-      password = pw;
+      password = pw || '';
+      if (pw) sessionToken = '';
       const btn = $('loginBtn');
       btn.disabled = true;
       btn.textContent = '驗證中…';
-      $('loginError').textContent = '';
+      loginMsg('');
 
       // 第一頁要看的資料(AC 的訂單明細、管理員／RC 的報表)由登入一起帶回,不用再等一趟;
       // 開啟頁面的操作紀錄也由後端在登入時寫
@@ -2981,21 +3257,40 @@
         fromStorage: !!fromStorage
       }).then(function (res) {
         btn.disabled = false;
-        btn.textContent = '登入';
+        btn.textContent = LOGIN_BTN_TEXT[loginStep];
         if (!res || !res.success) {
-          $('loginError').textContent = res ? res.error : '後端回傳空值';
+          loginMsg(res ? res.error : '後端回傳空值');
           return;
         }
-        try { localStorage.setItem(PW_STORAGE_KEY, pw); } catch (e) { /* 存不進去就算了,下次再輸入一次 */ }
+        applyLogin(res, fromStorage);
+      }).catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = LOGIN_BTN_TEXT[loginStep];
+        loginMsg(err.message);
+      });
+    }
+
+    function applyLogin(res, fromStorage) {
+        // 之後一律用登入憑證;密碼不留在記憶體、也不存在裝置上
+        if (res.session) sessionToken = res.session;
+        password = '';
+        try {
+          if (sessionToken) localStorage.setItem(SESSION_STORAGE_KEY, sessionToken);
+          localStorage.removeItem(PW_STORAGE_KEY);
+        } catch (e) { /* 存不進去就算了,下次再登入一次 */ }
         $('pwInput').value = '';
+        $('codeInput').value = '';
+        clearInterval(resendTimer);
         document.body.classList.remove('logged-out');
         role = res.role;
 
         // 「寄信助手」分頁只給管理員(後端也會擋)
         $('mailViewBtn').hidden = role !== 'admin';
         $('syncBtn').hidden = role !== 'admin';
-        $('pushBtn').hidden = role !== 'admin';
-        if (role === 'admin') refreshPushState(true);
+        // 手機通知:管理員(新訂單)、AC(新派單、每天未聯繫提醒);RC 改收雙週報表信
+        const canPush = role === 'admin' || role === 'ac';
+        $('pushBtn').hidden = !canPush;
+        if (canPush) refreshPushState(true);
         $('viewSwitch').classList.toggle('three', role === 'admin');
 
         if (role === 'ac') {
@@ -3021,11 +3316,6 @@
           initialReport = (res.initial && res.initial.report) || null;
           setView(role === 'admin' && location.hash === '#mail' ? 'mail' : 'report', true);
         }
-      }).catch(function (err) {
-        btn.disabled = false;
-        btn.textContent = '登入';
-        $('loginError').textContent = err.message;
-      });
     }
 
     function setIdentity(name, sub) {
@@ -3038,6 +3328,7 @@
       sessionSeq++;
       abortInflight();
       password = '';
+      sessionToken = '';
       role = '';
       currentAc = '';
       allOrders = [];
@@ -3055,7 +3346,10 @@
       showAllStores = false;
       Object.keys(updatedAt).forEach(function (k) { updatedAt[k] = ''; stale[k] = false; });
       resetMail();
-      try { localStorage.removeItem(PW_STORAGE_KEY); } catch (e) { }
+      try {
+        localStorage.removeItem(PW_STORAGE_KEY);
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+      } catch (e) { }
       clearTimeout(loadingTimeout);
       setStatus('');
       $('searchInput').value = '';
@@ -3066,10 +3360,12 @@
       $('pushBtn').hidden = true;
       $('pushBtn').setAttribute('aria-expanded', 'false');
       document.body.classList.add('logged-out');
-      const btn = $('loginBtn');
-      btn.disabled = false;
-      btn.textContent = '登入';
-      $('loginError').textContent = message || '';
+      // 回到輸入信箱(上次用的信箱先填好)
+      try { $('emailInput').value = loginEmail || localStorage.getItem(EMAIL_STORAGE_KEY) || ''; } catch (e) { }
+      $('pwInput').value = '';
+      $('codeInput').value = '';
+      setLoginStep(loginStep === 'pw' ? 'pw' : 'email');
+      loginMsg(message || '');
     }
 
     function fillAcSelect(acList) {
@@ -5641,16 +5937,23 @@
       loadUnassigned(undefined, 'rebuild');
     }
 
+    // 打開頁面:有記住的登入憑證就直接登入;舊版記住的密碼(管理員)換成登入憑證後刪掉
+    let savedSession = '';
     let savedPw = '';
     try {
-      savedPw = localStorage.getItem(PW_STORAGE_KEY) || '';
-      const legacyPw = localStorage.getItem(LEGACY_PW_STORAGE_KEY);
-      if (legacyPw) {
-        if (!savedPw) savedPw = legacyPw;
-        localStorage.removeItem(LEGACY_PW_STORAGE_KEY);
-      }
+      savedSession = localStorage.getItem(SESSION_STORAGE_KEY) || '';
+      savedPw = localStorage.getItem(PW_STORAGE_KEY) || localStorage.getItem(LEGACY_PW_STORAGE_KEY) || '';
+      localStorage.removeItem(PW_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_PW_STORAGE_KEY);
+      $('emailInput').value = localStorage.getItem(EMAIL_STORAGE_KEY) || '';
     } catch (e) { /* 讀不到就當作沒有 */ }
-    if (savedPw) login(savedPw, true);
+    setLoginStep('email');
+    if (savedSession) {
+      sessionToken = savedSession;
+      login('', true);
+    } else if (savedPw) {
+      login(savedPw, true);
+    }
   </script>
 </body>
 

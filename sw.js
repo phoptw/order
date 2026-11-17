@@ -1,5 +1,5 @@
 // Big Order 管理系統:網頁推播的 service worker
-// 只負責「收到推播 → 跳通知」和「點通知 → 打開寄信助手」;不做離線快取,網頁更新照常即時生效
+// 只負責「收到推播 → 跳通知」和「點通知 → 打開系統(管理員到寄信助手、AC 到訂單明細)」;不做離線快取,網頁更新照常即時生效
 
 self.addEventListener('install', function () {
   self.skipWaiting();
@@ -39,10 +39,10 @@ self.addEventListener('notificationclick', function (event) {
   event.notification.close();
   const target = safeUrl(event.notification.data && event.notification.data.url);
   event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
-    // 已經開著系統的話,切過去並請它打開寄信助手(不另開一個、不重新載入)
+    // 已經開著系統的話,切過去並請它打開寄信助手(管理員)/ 重新讀訂單明細(AC);不另開一個、不重新載入
     for (const c of list) {
       if (c.url.indexOf('ACReport.html') !== -1 && 'focus' in c) {
-        c.postMessage({ type: 'openMail' });
+        c.postMessage({ type: target.indexOf('#mail') !== -1 ? 'openMail' : 'openOrders' });
         return c.focus().catch(function () { return null; });
       }
     }
