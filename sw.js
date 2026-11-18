@@ -41,7 +41,8 @@ self.addEventListener('notificationclick', function (event) {
   event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
     // 已經開著系統的話,切過去並請它打開寄信助手(管理員)/ 重新讀訂單明細(AC);不另開一個、不重新載入
     for (const c of list) {
-      if (c.url.indexOf('ACReport.html') !== -1 && 'focus' in c) {
+      // 管理員的「預覽 RC/AC」分頁不算(那是別人的畫面)
+      if (c.url.indexOf('ACReport.html') !== -1 && c.url.indexOf('preview=') === -1 && 'focus' in c) {
         c.postMessage({ type: target.indexOf('#mail') !== -1 ? 'openMail' : 'openOrders' });
         return c.focus().catch(function () { return null; });
       }

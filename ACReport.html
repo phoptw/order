@@ -572,6 +572,26 @@
       color: var(--text);
     }
 
+    /* 管理員預覽 RC/AC 畫面:預覽分頁不顯示登入表單 */
+    .preview-mode #stepEmail,
+    .preview-mode #stepCode,
+    .preview-mode #stepRole,
+    .preview-mode #stepPw,
+    .preview-mode #loginBtn,
+    .preview-mode .login-links {
+      display: none !important;
+    }
+
+    .preview-bar {
+      background: var(--amber-soft);
+      color: var(--amber);
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.5;
+      padding: 8px 16px;
+      text-align: center;
+    }
+
     .code-result {
       margin-top: 10px;
       font-size: 14px;
@@ -2418,6 +2438,7 @@
   <!-- 登入後 -->
   <div class="needs-login">
     <header class="appbar">
+      <div class="preview-bar" id="previewBar" role="status" hidden></div>
       <div class="appbar-inner">
         <div class="appbar-row">
           <div class="appbar-text">
@@ -2425,6 +2446,7 @@
             <div class="appbar-status" id="status"></div>
           </div>
           <button class="icon-btn" id="pushBtn" aria-label="手機通知" title="手機通知" aria-expanded="false" aria-controls="pushPanel" data-icon="bell" hidden></button>
+          <button class="icon-btn" id="previewBtn" aria-label="預覽 RC/AC 的畫面" title="預覽 RC/AC 的畫面" aria-expanded="false" aria-controls="previewPanel" data-icon="eye" hidden></button>
           <button class="icon-btn" id="codeBtn" aria-label="幫人產生登入碼" title="幫人產生登入碼（收不到驗證碼信時）" aria-expanded="false" aria-controls="codePanel" data-icon="key" hidden></button>
           <button class="icon-btn" id="syncBtn" aria-label="立即從試算表同步新訂單" title="立即從試算表同步新訂單" data-icon="sync" hidden></button>
           <button class="icon-btn" id="refreshBtn" aria-label="重新整理" title="重新整理" data-icon="refresh"></button>
@@ -2455,6 +2477,17 @@
               <button type="submit" class="btn btn-small btn-primary" id="codeIssueBtn">產生</button>
             </div>
             <div class="code-result" id="codeResult" role="status"></div>
+          </div>
+        </form>
+        <!-- 管理員:用 RC/AC 的身分看畫面(開新分頁、只能看) -->
+        <form class="push-panel code-panel" id="previewPanel" hidden novalidate>
+          <div class="push-text">
+            <div class="push-title">預覽 RC／AC 的畫面</div>
+            <div class="push-sub">選一位 RC 或 AC，開新分頁看他登入後看到的畫面（範圍、隱藏的舊單都一樣）。只能看，不能修改，也不會記在他名下。</div>
+            <div class="code-row">
+              <select class="code-email" id="previewSelect" aria-label="要預覽的 RC 或 AC"></select>
+              <button type="submit" class="btn btn-small btn-primary">開啟</button>
+            </div>
           </div>
         </form>
         <div class="view-switch-wrap" id="viewSwitchWrap" hidden>
@@ -2539,6 +2572,24 @@
     // ⚠ 請把這裡換成你部署的 Apps Script API 網址(結尾是 /exec)
     // 後端:Supabase 資料庫上的 Edge Function(supabase/functions/api);舊的 Apps Script API 已停用
     const API_BASE_URL = 'https://fzyuiwpiqcfkotkauywd.supabase.co/functions/v1/api';
+    // 管理員預覽分頁:網址 #preview=rc:名字 或 #preview=ac:名字(放 # 後面,姓名不會送到網站主機);
+    // 每個請求都帶 viewAs,後端用對方身分「讀」、擋掉所有修改。預覽分頁不改動共用的登入憑證
+    // PREVIEW_REQUESTED:網址要求預覽(就算格式錯也不當成一般管理員頁面打開)
+    function parsePreviewHash(hash) {
+      const req = String(hash || '').indexOf('#preview=') === 0;
+      let as = '';
+      if (req) {
+        try {
+          const v = decodeURIComponent(hash.slice('#preview='.length));
+          // rc:名字 / ac:名字;名字去頭尾空白後要有內容、不能有換行、不超過 100 字
+          if (/^(rc|ac):[^\r\n]{1,100}$/.test(v) && v.slice(3).trim() && v.slice(3).trim() === v.slice(3)) as = v;
+        } catch (e) { as = ''; }
+      }
+      return { req: req, as: as };
+    }
+    const PREVIEW_REQUESTED = parsePreviewHash(location.hash).req;
+    const PREVIEW_AS = parsePreviewHash(location.hash).as;
+    const DEFAULT_TITLE = document.title;
 
     // 統一呼叫後端 API 的小工具:一律 POST + text/plain(避免 CORS preflight),並帶上登入密碼。
     // 密碼錯誤/失效時直接跳回登入畫面,並回傳一個永遠不會完成的 Promise,讓呼叫端不會再蓋掉畫面
@@ -2597,6 +2648,7 @@
       // 登入後只帶 session(登入憑證);管理員用密碼登入的那一次才帶密碼
       const cred = sessionToken ? { session: sessionToken } : (password ? { pw: password } : {});
       const body = Object.assign({ action: action }, cred, params || {});
+      if (PREVIEW_AS) body.viewAs = PREVIEW_AS;
       const isWrite = WRITE_ACTIONS.indexOf(action) !== -1;
       const limit = isWrite ? WRITE_TIMEOUT_MS : READ_TIMEOUT_MS;
       const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -3029,6 +3081,43 @@
         });
     }
 
+    // ===== 管理員:預覽 RC/AC 的畫面 =====
+    function fillPreviewSelect(rcList, acList) {
+      const sel = $('previewSelect');
+      sel.innerHTML = '';
+      [['rc', 'RC', rcList], ['ac', 'AC', acList]].forEach(function (g) {
+        // 只列預覽網址放得下的名字(跟 parsePreviewHash 同一套規則)
+        const names = (g[2] || []).filter(function (n) {
+          return n && parsePreviewHash('#preview=' + encodeURIComponent(g[0] + ':' + n)).as === g[0] + ':' + n;
+        });
+        if (!names.length) return;
+        const og = document.createElement('optgroup');
+        og.label = g[1];
+        names.forEach(function (n) {
+          const o = document.createElement('option');
+          o.value = g[0] + ':' + n;
+          o.textContent = g[1] + '　' + n;
+          og.appendChild(o);
+        });
+        sel.appendChild(og);
+      });
+    }
+
+    $('previewBtn').addEventListener('click', function () {
+      const panel = $('previewPanel');
+      panel.hidden = !panel.hidden;
+      this.setAttribute('aria-expanded', String(!panel.hidden));
+      if (!panel.hidden) setTimeout(function () { $('previewSelect').focus(); }, 0);
+    });
+
+    $('previewPanel').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const v = $('previewSelect').value;
+      if (!v) return;
+      // 同一個網頁、同一個登入憑證,只多帶 ?preview=;新分頁不影響這一頁
+      window.open(location.pathname + '#preview=' + encodeURIComponent(v), '_blank', 'noopener');
+    });
+
     // ===== 管理員:幫人產生登入碼 =====
     $('codeBtn').addEventListener('click', function () {
       const panel = $('codePanel');
@@ -3117,9 +3206,11 @@
       $('changeEmailBtn').hidden = step !== 'code' && step !== 'role';
       $('pwModeBtn').textContent = step === 'pw' ? '改用信箱驗證碼登入' : '管理員密碼登入';
       $('pwModeBtn').hidden = step === 'code' || step === 'role';
-      $('loginIntro').textContent = step === 'pw'
-        ? '管理員備用登入：請輸入管理員密碼。'
-        : '輸入公司信箱，系統會寄 6 位數驗證碼給你。登入後這個裝置會記住 30 天。';
+      $('loginIntro').textContent = PREVIEW_REQUESTED
+        ?'這是「預覽 RC／AC 畫面」的分頁。請先在管理員分頁登入，再從右上角眼睛按鈕開啟預覽。'
+        : step === 'pw'
+          ? '管理員備用登入：請輸入管理員密碼。'
+          : '輸入公司信箱，系統會寄 6 位數驗證碼給你。登入後這個裝置會記住 30 天。';
       if (step !== 'code') clearInterval(resendTimer);
       const focus = { email: 'emailInput', code: 'codeInput', pw: 'pwInput' }[step];
       if (focus) setTimeout(function () { try { $(focus).focus(); } catch (e) { } }, 0);
@@ -3296,6 +3387,13 @@
     });
 
     $('logoutBtn').addEventListener('click', function () {
+      // 預覽分頁:不登出(登出會讓管理員自己的憑證作廢),只關掉這個分頁
+      if (PREVIEW_AS) {
+        window.close();
+        // 關不掉(直接打開網址的分頁瀏覽器不讓程式關):清掉畫面,請他自己關
+        setTimeout(function () { showLogin('預覽已結束，請關閉這個分頁。'); }, 300);
+        return;
+      }
       if (!confirm('確定要登出嗎？下次要重新收驗證碼登入。')) return;
       // 登出紀錄、伺服器那邊的登入憑證作廢:直接送出、不列入「進行中的請求」
       // (showLogin 會中斷所有進行中的請求,用 gasCall 送的話登出會被自己取消);keepalive:頁面關掉也會送完
@@ -3401,10 +3499,13 @@
         // 之後一律用登入憑證;密碼不留在記憶體、也不存在裝置上
         if (res.session) sessionToken = res.session;
         password = '';
-        try {
-          if (sessionToken) localStorage.setItem(SESSION_STORAGE_KEY, sessionToken);
-          localStorage.removeItem(PW_STORAGE_KEY);
-        } catch (e) { /* 存不進去就算了,下次再登入一次 */ }
+        // 預覽分頁只讀共用的登入憑證,不寫回(免得蓋掉其他分頁剛換的新憑證)
+        if (!PREVIEW_AS) {
+          try {
+            if (sessionToken) localStorage.setItem(SESSION_STORAGE_KEY, sessionToken);
+            localStorage.removeItem(PW_STORAGE_KEY);
+          } catch (e) { /* 存不進去就算了,下次再登入一次 */ }
+        }
         $('pwInput').value = '';
         $('codeInput').value = '';
         clearInterval(resendTimer);
@@ -3415,8 +3516,18 @@
         $('mailViewBtn').hidden = role !== 'admin';
         $('syncBtn').hidden = role !== 'admin';
         $('codeBtn').hidden = role !== 'admin';
-        // 手機通知:管理員(新訂單)、AC(新派單、每天未聯繫提醒);RC 改收雙週報表信
-        const canPush = role === 'admin' || role === 'ac';
+        $('previewBtn').hidden = role !== 'admin';
+        if (role === 'admin') fillPreviewSelect(res.rcList, res.acList);
+        const preview = !!(PREVIEW_AS && res.preview);
+        $('previewBar').hidden = !preview;
+        if (preview) {
+          $('previewBar').textContent = '預覽模式：這是 ' + (role === 'rc' ? 'RC ' + res.rc : 'AC ' + res.ac) + ' 看到的畫面，只能看、不能修改';
+          $('logoutBtn').setAttribute('aria-label', '結束預覽');
+          $('logoutBtn').title = '結束預覽（關閉這個分頁）';
+          document.title = '預覽 ' + (role === 'rc' ? res.rc : res.ac) + '｜Big Order';
+        }
+        // 手機通知:管理員(新訂單)、AC(新派單、每天未聯繫提醒);RC 改收雙週報表信。預覽時不開
+        const canPush = !preview && (role === 'admin' || role === 'ac');
         $('pushBtn').hidden = !canPush;
         if (canPush) refreshPushState(true);
         $('viewSwitch').classList.toggle('three', role === 'admin');
@@ -3474,19 +3585,31 @@
       showAllStores = false;
       Object.keys(updatedAt).forEach(function (k) { updatedAt[k] = ''; stale[k] = false; });
       resetMail();
-      try {
-        localStorage.removeItem(PW_STORAGE_KEY);
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-      } catch (e) { }
+      // 預覽分頁不刪共用的登入憑證(管理員自己的分頁還在用;真的失效時那邊會自己處理)
+      if (!PREVIEW_AS) {
+        try {
+          localStorage.removeItem(PW_STORAGE_KEY);
+          localStorage.removeItem(SESSION_STORAGE_KEY);
+        } catch (e) { }
+      }
       clearTimeout(loadingTimeout);
       setStatus('');
       $('searchInput').value = '';
       searchKeyword = '';
       $('tooltip').hidden = true;
+      $('tooltip').textContent = '';
       // 手機通知的開關只給管理員:登出時收起來(這支手機的訂閱不動,要停收請先按「關閉通知」)
       $('pushPanel').hidden = true;
       $('pushBtn').hidden = true;
       $('pushBtn').setAttribute('aria-expanded', 'false');
+      $('previewPanel').hidden = true;
+      $('previewBtn').hidden = true;
+      $('previewBtn').setAttribute('aria-expanded', 'false');
+      $('previewSelect').innerHTML = '';
+      $('previewBar').hidden = true;
+      $('previewBar').textContent = '';
+      $('acFilter').innerHTML = '';
+      document.title = DEFAULT_TITLE;
       // 產生登入碼:登出時收起來、清掉畫面上的碼
       $('codePanel').hidden = true;
       $('codeBtn').hidden = true;
@@ -3495,7 +3618,8 @@
       $('codeResult').textContent = '';
       document.body.classList.add('logged-out');
       // 回到輸入信箱(上次用的信箱先填好)
-      try { $('emailInput').value = loginEmail || localStorage.getItem(EMAIL_STORAGE_KEY) || ''; } catch (e) { }
+      if (PREVIEW_AS) $('emailInput').value = '';
+      else { try { $('emailInput').value = loginEmail || localStorage.getItem(EMAIL_STORAGE_KEY) || ''; } catch (e) { } }
       $('pwInput').value = '';
       $('codeInput').value = '';
       setLoginStep(loginStep === 'pw' ? 'pw' : 'email');
@@ -3529,7 +3653,10 @@
       window.scrollTo(0, 0);
       if (role === 'admin') {
         // 網址記住目前分頁,瀏覽器重新整理後還停在寄信助手
+        // 網址是 #preview=(預覽分頁,或剛貼上預覽網址等著重新載入):不改網址
+      if (location.hash.indexOf('#preview=') !== 0) {
         try { history.replaceState(null, '', v === 'mail' ? '#mail' : location.pathname + location.search); } catch (e) { }
+      }
       }
       if (v === 'report') {
         if (!reportOrders || stale.report) loadReport();
@@ -3931,6 +4058,11 @@
     }
 
     function saveStatus(order, newStatus, amountValue, btn, setSaving, onFail) {
+      if (PREVIEW_AS) {
+        alert('預覽模式只能看，不能修改。');
+        if (onFail) onFail();
+        return;
+      }
       if (newStatus === STATUS_WON) {
         const amt = Number(amountValue);
         if (!amountValue || isNaN(amt) || amt <= 0) {
@@ -6076,14 +6208,34 @@
     // 打開頁面:有記住的登入憑證就直接登入;舊版記住的密碼(管理員)換成登入憑證後刪掉
     let savedSession = '';
     let savedPw = '';
-    try {
-      savedSession = localStorage.getItem(SESSION_STORAGE_KEY) || '';
-      savedPw = localStorage.getItem(PW_STORAGE_KEY) || localStorage.getItem(LEGACY_PW_STORAGE_KEY) || '';
-      localStorage.removeItem(PW_STORAGE_KEY);
-      localStorage.removeItem(LEGACY_PW_STORAGE_KEY);
-      $('emailInput').value = localStorage.getItem(EMAIL_STORAGE_KEY) || '';
-    } catch (e) { /* 讀不到就當作沒有 */ }
+    if (PREVIEW_REQUESTED) {
+      // 預覽分頁:只讀管理員的登入憑證,不碰其他記住的資料,也不顯示登入表單(要登入請回管理員分頁)
+      document.body.classList.add('preview-mode');
+      if (PREVIEW_AS) {
+        try { savedSession = localStorage.getItem(SESSION_STORAGE_KEY) || ''; } catch (e) { /* 讀不到就當作沒有 */ }
+      }
+      // 管理員在別的分頁登出或換了登入:這個預覽分頁立刻清掉畫面
+      window.addEventListener('storage', function (e) {
+        if (e.key === SESSION_STORAGE_KEY || e.key === null) {
+          if (sessionToken && (e.newValue || '') !== sessionToken) showLogin('管理員已登出或重新登入，預覽已結束，請關閉這個分頁。');
+        }
+      });
+    } else {
+      try {
+        savedSession = localStorage.getItem(SESSION_STORAGE_KEY) || '';
+        savedPw = localStorage.getItem(PW_STORAGE_KEY) || localStorage.getItem(LEGACY_PW_STORAGE_KEY) || '';
+        localStorage.removeItem(PW_STORAGE_KEY);
+        localStorage.removeItem(LEGACY_PW_STORAGE_KEY);
+        $('emailInput').value = localStorage.getItem(EMAIL_STORAGE_KEY) || '';
+      } catch (e) { /* 讀不到就當作沒有 */ }
+    }
+    // 網址的 #preview= 被改掉或貼上新的:重新載入,讓這一頁重新判斷是不是預覽(不會停在錯的身分)
+    window.addEventListener('hashchange', function () {
+      const p = parsePreviewHash(location.hash);
+      if (p.req !== PREVIEW_REQUESTED || p.as !== PREVIEW_AS) location.reload();
+    });
     setLoginStep('email');
+    if (PREVIEW_REQUESTED && !PREVIEW_AS) loginMsg('預覽網址不正確，請關閉這個分頁，從管理員畫面的眼睛按鈕重新開啟。');
     if (savedSession) {
       sessionToken = savedSession;
       login('', true);
