@@ -2291,6 +2291,18 @@
       color: var(--text-3);
     }
 
+    /* 「拖太久」「需注意」卡片:選中時框起來 */
+    .kpi-link.on {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 1px var(--blue) inset, var(--shadow);
+    }
+
+    .panel-sub .attn-all {
+      margin-left: 8px;
+      padding: 0;
+      font-size: 13px;
+    }
+
     .tbl .warn-num {
       color: var(--red);
       font-weight: 700;
@@ -3580,6 +3592,7 @@
       $('toast-wrap').innerHTML = '';
       setIdentity('', '');
       reportFilter.period = 'all';
+      attnFocus = '';
       reportFilter.rc = '';
       reportFilter.ac = '';
       showAllStores = false;
@@ -4291,10 +4304,11 @@
     // 「拖太久」:跟每日待辦摘要副本給 RC 的條件一致
     // 尚未聯繫超過 2 天(從通知寄出算),或用餐日已過還沒結案
     const ESCALATE_HOURS = 48;
+    let reportNow = 0; // 每次畫報表擷取一次時間,統計數字和清單用同一個時間點判斷
     function isEscalated(o) {
       if (OPEN_STATUSES.indexOf(o.status) === -1) return false;
       if (typeof o.daysUntil === 'number' && o.daysUntil < 0) return true;
-      return o.status === STATUS_PENDING && typeof o.sentKey === 'number' && Date.now() - o.sentKey > ESCALATE_HOURS * 3600000;
+      return o.status === STATUS_PENDING && typeof o.sentKey === 'number' && (reportNow || Date.now()) - o.sentKey > ESCALATE_HOURS * 3600000;
     }
 
     function summarize(orders) {
@@ -4339,16 +4353,20 @@
       const body = $('reportBody');
       body.innerHTML = '';
       $('tooltip').hidden = true;
+      reportNow = Date.now();
       const orders = filteredReportOrders();
 
       // 營運狀況是全公司的數字,不受篩選影響:就算這個範圍沒有訂單也要顯示
       if (role === 'admin' && reportOps) body.appendChild(buildOpsPanel(reportOps));
 
       if (!orders.length) {
+        attnFocus = '';
         body.appendChild(stateEl('📭', '這個範圍沒有訂單', '換個期間或篩選條件試試'));
         return;
       }
       const sum = summarize(orders);
+      // 換了期間/RC/AC 後,選中的分類已經沒有訂單:取消選取
+      if ((attnFocus === 'escalated' && !sum.escalated) || (attnFocus === 'attention' && !sum.attention)) attnFocus = '';
       body.appendChild(buildKpis(sum));
       body.appendChild(buildStatusPanel(sum));
 
@@ -4460,9 +4478,49 @@
       box.appendChild(kpi('成交金額', formatMoney(s.amount), s.won ? s.won + ' 筆成交' : '尚無成交'));
       box.appendChild(kpi('成交率', pct(s.won, s.won + s.lost), '已結案 ' + (s.won + s.lost) + ' 筆'));
       box.appendChild(kpi('平均成交金額', s.won ? formatMoney(s.amount / s.won) : '—', '每筆成交訂單'));
-      box.appendChild(kpi('拖太久', s.escalated, '未聯繫超過 2 天或用餐日已過', { warn: s.escalated > 0, icon: 'clock' }));
-      box.appendChild(kpi('需注意', s.attention, '2 天內用餐仍未成交', { warn: s.attention > 0, icon: 'alert' }));
+      box.appendChild(focusKpi(kpi('拖太久', s.escalated, '未聯繫超過 2 天或用餐日已過', { warn: s.escalated > 0, icon: 'clock' }), 'escalated', s.escalated));
+      box.appendChild(focusKpi(kpi('需注意', s.attention, '2 天內用餐仍未成交', { warn: s.attention > 0, icon: 'alert' }), 'attention', s.attention));
       return box;
+    }
+
+    // 「拖太久」「需注意」卡片:點一下,下方「需要注意」只列這一種並捲過去;再點一次回到兩種都列
+    let attnFocus = ''; // '' | 'escalated' | 'attention'
+    function focusKpi(box, kind, count) {
+      if (!count) return box;
+      const btn = el('button', box.className + ' kpi-link' + (attnFocus === kind ? ' on' : ''));
+      btn.type = 'button';
+      while (box.firstChild) btn.appendChild(box.firstChild);
+      btn.appendChild(iconEl('chevronRight', 'kpi-go'));
+      // 名稱固定,選中與否用 aria-pressed 表示
+      btn.setAttribute('aria-pressed', String(attnFocus === kind));
+      btn.setAttribute('aria-label', btn.textContent + '・只列出這些訂單');
+      btn.title = attnFocus === kind ? '再點一次，取消篩選' : '點一下，只列出這些訂單';
+      btn.addEventListener('click', function () {
+        attnFocus = attnFocus === kind ? '' : kind;
+        renderReport();
+        focusAttnPanel(true);
+      });
+      return btn;
+    }
+
+    // 重畫後原本的按鈕不見了:把焦點和畫面移到「需要注意」的標題
+    function focusAttnPanel(smooth) {
+      const p = $('attnPanel');
+      if (!p) return;
+      const t = p.querySelector('.panel-title');
+      const sub = p.querySelector('.panel-sub');
+      if (t) {
+        t.setAttribute('tabindex', '-1');
+        // 螢幕閱讀器讀標題時一起讀出目前的篩選與筆數
+        if (sub) { sub.id = 'attnPanelSub'; t.setAttribute('aria-describedby', 'attnPanelSub'); }
+        try { t.focus({ preventScroll: true }); } catch (e) { t.focus(); }
+      }
+      // 頁首固定在上方:留出它的高度,標題才不會被蓋住
+      const bar = document.querySelector('.appbar');
+      p.style.scrollMarginTop = ((bar ? bar.offsetHeight : 0) + 8) + 'px';
+      let reduce = false;
+      try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { reduce = false; }
+      p.scrollIntoView({ behavior: smooth && !reduce ? 'smooth' : 'auto', block: 'start' });
     }
 
     function panel(title, sub) {
@@ -4512,14 +4570,32 @@
       return p;
     }
 
+    // 「需要注意」:拖太久 + 快到用餐日(需注意)兩種都列;上方卡片點了就只列那一種
     function buildAttentionPanel(orders) {
-      const items = orders.filter(isAttention).sort(byDiningDate);
-      if (!items.length) return null;
-      const p = panel('需要注意', items.length + ' 筆用餐日 2 天內（或已過）仍未成交');
+      const all = orders.filter(function (o) { return isAttention(o) || isEscalated(o); }).sort(byDiningDate);
+      if (!all.length) { attnFocus = ''; return null; }
+      const nEsc = all.filter(isEscalated).length;
+      const nAttn = all.filter(isAttention).length;
+      let items = all;
+      if (attnFocus === 'escalated') items = all.filter(isEscalated);
+      if (attnFocus === 'attention') items = all.filter(isAttention);
+      const focusName = { escalated: '拖太久', attention: '需注意' }[attnFocus] || '';
+      const p = panel('需要注意', focusName
+        ? '只看「' + focusName + '」' + items.length + ' 筆'
+        : all.length + ' 筆：拖太久 ' + nEsc + '・需注意 ' + nAttn + (nEsc && nAttn && nEsc + nAttn > all.length ? '（有些兩種都算）' : ''));
+      p.id = 'attnPanel';
+      if (focusName) {
+        const back = el('button', 'link-btn attn-all', '取消篩選');
+        back.type = 'button';
+        back.addEventListener('click', function () { attnFocus = ''; renderReport(); focusAttnPanel(false); });
+        p.querySelector('.panel-sub').appendChild(back);
+      }
       const list = el('div', 'attn-list');
-      items.slice(0, 8).forEach(function (o) {
-        const btn = el('button', 'attn-item');
-        btn.type = 'button';
+      const limit = focusName ? items.length : 8;
+      items.slice(0, limit).forEach(function (o) {
+        // 有 AC 才能點進訂單明細;沒對應 AC 的只顯示、不做成按鈕
+        const btn = el(o.ac ? 'button' : 'div', 'attn-item');
+        if (o.ac) btn.type = 'button';
         const main = el('div', 'attn-main');
         const hasCustomer = hasValue(o.customer);
         main.appendChild(el('div', 'attn-title', hasCustomer ? o.customer : o.storeName));
@@ -4527,17 +4603,26 @@
         btn.appendChild(main);
         const side = el('div', 'attn-side');
         side.appendChild(statusPill(o.status));
+        // 拖太久的原因:用餐日已過(下面的日期標籤會寫「已過 N 天」),或通知寄出後一直沒聯繫
+        if (isEscalated(o) && !(typeof o.daysUntil === 'number' && o.daysUntil < 0)) {
+          const t = el('span', 'tag late');
+          t.appendChild(iconEl('clock', 'ic-sm'));
+          t.appendChild(document.createTextNode('寄出 ' + Math.floor(((reportNow || Date.now()) - o.sentKey) / 86400000) + ' 天未聯繫'));
+          side.appendChild(t);
+        }
         const due = dueTag(o);
         if (due) side.appendChild(due);
         btn.appendChild(side);
-        btn.addEventListener('click', function () {
-          if (o.ac) openDetail(o.ac, hasValue(o.customer) ? o.customer : o.storeName);
-        });
+        if (o.ac) {
+          btn.addEventListener('click', function () {
+            openDetail(o.ac, hasValue(o.customer) ? o.customer : o.storeName);
+          });
+        }
         list.appendChild(btn);
       });
       p.appendChild(list);
-      if (items.length > 8) {
-        p.appendChild(el('p', 'footnote', '還有 ' + (items.length - 8) + ' 筆，可在下方表格點進各 AC 查看。'));
+      if (items.length > limit) {
+        p.appendChild(el('p', 'footnote', '還有 ' + (items.length - limit) + ' 筆：點上方「拖太久」或「需注意」卡片可列出全部。'));
       }
       return p;
     }
