@@ -4647,8 +4647,8 @@
         '成交率 ＝ 已成交 ÷（已成交＋已流失），只計算已結案的訂單。' +
         '待處理分三類，一筆只算一類：「用餐日已過」＝ 用餐日過了還沒結案（請回報成交或流失）；' +
         '「快到用餐日」＝ 今天到 2 天內要用餐、還沒成交（請確認訂單）；' +
-        '「未聯繫」＝ 通知寄出超過 24 小時還是尚未聯繫（請打電話）。' +
-        'AC 的每日待辦摘要只要有訂單「用餐日已過仍未結案」或「寄出超過 24 小時仍未聯繫」（不管歸在哪一類），整封信就會副本給 RC' +
+        '「未聯繫」＝ 派單超過 24 小時還是尚未聯繫（請打電話）。' +
+        'AC 的每日待辦摘要只要有訂單「用餐日已過仍未結案」或「派單超過 24 小時仍未聯繫」（不管歸在哪一類），整封信就會副本給 RC' +
         '（信裡的訂單都屬於同一位 RC、而且找得到 RC 的信箱時才副本；跨兩位 RC 或認不出 RC 就不副本）。'));
     }
 
@@ -4714,7 +4714,7 @@
       todo.setAttribute('aria-label', '待處理訂單');
       todo.appendChild(focusKpi(kpi('用餐日已過', s.overdue, '還沒結案，請回報結果', { warn: s.overdue > 0, icon: 'alert' }), 'overdue', s.overdue));
       todo.appendChild(focusKpi(kpi('快到用餐日', s.soon, '2 天內用餐，請確認訂單', { warn: s.soon > 0, icon: 'clock' }), 'soon', s.soon));
-      todo.appendChild(focusKpi(kpi('未聯繫', s.uncontacted, '寄出超過 24 小時，請打電話', { warn: s.uncontacted > 0, icon: 'phone' }), 'uncontacted', s.uncontacted));
+      todo.appendChild(focusKpi(kpi('未聯繫', s.uncontacted, '派單超過 24 小時，請打電話', { warn: s.uncontacted > 0, icon: 'phone' }), 'uncontacted', s.uncontacted));
       wrap.appendChild(todo);
       return wrap;
     }
@@ -4843,7 +4843,7 @@
           const hrs = Math.floor(((reportNow || Date.now()) - o.sentKey) / 3600000);
           const t = el('span', 'tag late');
           t.appendChild(iconEl('phone', 'ic-sm'));
-          t.appendChild(document.createTextNode('寄出 ' + (hrs < 48 ? hrs + ' 小時' : Math.floor(hrs / 24) + ' 天') + '未聯繫'));
+          t.appendChild(document.createTextNode('派單 ' + (hrs < 48 ? hrs + ' 小時' : Math.floor(hrs / 24) + ' 天') + '未聯繫'));
           side.appendChild(t);
         }
         const due = dueTag(o);
