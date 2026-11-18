@@ -785,6 +785,40 @@
       overflow: hidden;
     }
 
+    /* 從報表點某一筆:捲到那張卡片、框起來閃一下 */
+    .card.flash {
+      outline: 3px solid var(--blue);
+      outline-offset: 2px;
+      animation: cardFlash 1.2s ease-in-out 2;
+    }
+
+    @keyframes cardFlash {
+      50% {
+        outline-color: transparent;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card.flash {
+        animation: none;
+      }
+    }
+
+    .search-hint {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 14px;
+      color: var(--text-2);
+      margin: -4px 0 12px;
+    }
+
+    .search-hint .link-btn {
+      padding: 0;
+      font-size: 14px;
+    }
+
     .card::before {
       content: '';
       position: absolute;
@@ -2542,6 +2576,11 @@
             <input type="search" id="searchInput" placeholder="搜尋顧客、門市、電話或訂單編號" aria-label="搜尋">
           </label>
         </div>
+        <!-- 有搜尋字時:告訴使用者其他卡片是被搜尋藏起來的 -->
+        <div class="search-hint" id="searchHint" role="status" hidden>
+          <span id="searchHintText"></span>
+          <button type="button" class="link-btn" id="searchClearBtn">清除搜尋</button>
+        </div>
       </div>
       <main class="list" id="list"></main>
     </section>
@@ -3193,7 +3232,23 @@
     // 管理員 / RC 在明細切換要看哪一位 AC
     $('acSelect').addEventListener('change', function () {
       const ac = this.value;
-      if (!ac) return;
+      pendingFocus = null; // 自己換了 AC(或選回空白):不再捲到剛才報表點的那一筆
+      if (!ac) {
+        // 選回空白:清掉上一位 AC 的訂單,進行中的讀取回來也不採用
+        latestOnly('orders');
+        currentAc = '';
+        allOrders = [];
+        ordersState = 'ok';
+        clearTimeout(loadingTimeout);
+        updatedAt.detail = '';
+        setStatus('');
+        updateTabCounts();
+        $('stats').innerHTML = '';
+        $('searchHint').hidden = true;
+        $('acView').hidden = true;
+        showState('list', '👆', '請選擇要查看的 AC', '從上方下拉選單選一位 AC');
+        return;
+      }
       loadOrders(ac);
       logAction('切換查看 AC', ac);
     });
@@ -3421,14 +3476,38 @@
 
     $('tabRow').addEventListener('click', function (e) {
       const btn = e.target.closest('.seg-btn');
-      if (!btn || btn.dataset.tab === currentTab) return;
+      if (!btn) return;
+      // 自己點了分頁(就算是目前這個):讀完後不再自動切分頁或捲到報表點的那一筆
+      pendingFocus = null;
+      autoTab = false;
+      if (btn.dataset.tab === currentTab) return;
       setTab(btn.dataset.tab);
       logAction('切換分頁', currentTab === 'open' ? '未結案' : '已結案');
       renderCurrentTab();
     });
 
+    // 等明細讀取時,使用者已經自己移到搜尋欄、分頁等控制項:讀完就不搶焦點、不捲動
+    // 整個訂單明細區(含 AC 下拉選單);定位時程式自己移焦點的那一刻 pendingFocus 已經清掉了,不受影響
+    // 清單區(載入失敗時的「重試」按鈕在這裡)不算:重試成功後仍要捲到那一筆
+    // 整頁都算(頁首的登入碼、預覽表單等),只有清單區例外
+    function cancelPendingByUser(e) {
+      if (!pendingFocus || $('list').contains(e.target)) return;
+      if (e.type === 'click' && !e.isTrusted) return; // 程式觸發的點擊不算
+      pendingFocus = null;
+    }
+    document.addEventListener('focusin', cancelPendingByUser);
+    // Safari 點按鈕不一定移動焦點:另外看使用者的點擊(捕獲階段)
+    document.addEventListener('click', cancelPendingByUser, true);
+    // 按下去的那一刻就取消(按住還沒放開時讀完,也不會被拉走)
+    document.addEventListener('pointerdown', function (e) {
+      if (!e.isTrusted || !pendingFocus || $('list').contains(e.target)) return;
+      pendingFocus = null;
+    }, true);
+
     $('searchInput').addEventListener('input', function () {
       searchKeyword = this.value.trim().toLowerCase();
+      pendingFocus = null; // 自己開始搜尋:不再捲到報表點的那一筆
+      if (!searchKeyword) autoTab = false;
       renderCurrentTab();
     });
 
@@ -3609,6 +3688,11 @@
       setStatus('');
       $('searchInput').value = '';
       searchKeyword = '';
+      pendingFocus = null;
+      ordersState = 'ok'; // 進行中的讀取已被中斷,不會回來改它
+      reportState = 'ok';
+      $('searchHint').hidden = true;
+      $('searchHintText').textContent = '';
       $('tooltip').hidden = true;
       $('tooltip').textContent = '';
       // 手機通知的開關只給管理員:登出時收起來(這支手機的訂閱不動,要停收請先按「關閉通知」)
@@ -3654,6 +3738,7 @@
 
     function setView(v, silent) {
       view = v;
+      if (v !== 'detail') pendingFocus = null; // 離開訂單明細:不再捲到剛才點的那一筆
       document.querySelectorAll('#viewSwitch .seg-btn').forEach(function (b) {
         const on = b.dataset.view === v;
         b.classList.toggle('active', on);
@@ -3672,7 +3757,10 @@
       }
       }
       if (v === 'report') {
-        if (!reportOrders || stale.report) loadReport();
+        // 還在讀:等它回來(不重送);讀失敗:保留錯誤畫面,由「重試」重新讀
+        if (reportState === 'loading') setStatus('載入報表中…');
+        else if (reportState === 'error') setStatus('載入失敗');
+        else if (!reportOrders || stale.report) loadReport();
         else showUpdated('report');
         if (!silent) logAction('查看報表', '');
       } else if (v === 'mail') {
@@ -3680,7 +3768,10 @@
         if (!mailLoaded || stale.mail) loadMail();
         else showUpdated('mail');
       } else {
-        if (stale.detail && currentAc && !silent) loadOrders(currentAc);
+        // 還在讀:等它回來(不重送);讀失敗:保留錯誤畫面,由「重試」重新讀
+        if (ordersState === 'loading') setStatus('載入中…');
+        else if (ordersState === 'error') setStatus('載入失敗');
+        else if (stale.detail && currentAc && !silent) loadOrders(currentAc);
         else showUpdated('detail');
       }
     }
@@ -3694,17 +3785,63 @@
       });
     }
 
-    // 從報表點某位 AC / 門市 / 訂單 → 切到明細並帶入搜尋字
-    function openDetail(ac, search) {
+    // 從報表點某位 AC / 門市 → 切到明細並帶入搜尋字(門市)
+    // 點某一筆訂單(focusOrder)→ 不搜尋、全部卡片照常列出,捲到那一張並框起來(用訂單編號找,不會找錯同門市的另一筆)
+    // pendingFocus:{ orderId, submitTimeKey, storeName } 或 null
+    let pendingFocus = null;
+    function sameOrder(target, o) {
+      // 新版 API 兩邊都有資料庫唯一編號 rowKey:直接比;舊版才退回訂單編號、填單時間+門市
+      if (target.rowKey && o.rowKey) return o.rowKey === target.rowKey;
+      if (target.orderId) return o.orderId === target.orderId;
+      // 舊版報表沒帶編號、或這筆還沒有編號:用填單時間+門市認
+      return o.submitTimeKey === target.submitTimeKey && o.storeName === target.storeName;
+    }
+    function openDetail(ac, search, focusOrder) {
       if (!ac) return;
+      if (focusOrder) search = '';
       $('acSelect').value = ac;
       $('searchInput').value = search || '';
       searchKeyword = (search || '').trim().toLowerCase();
+      $('searchHint').hidden = true; // 讀完會依新的搜尋字重新顯示
+      pendingFocus = focusOrder
+        ? { rowKey: focusOrder.rowKey || '', orderId: focusOrder.orderId || '', submitTimeKey: focusOrder.submitTimeKey, storeName: focusOrder.storeName }
+        : null;
       setTab('open');
       autoTab = !!search;
       setView('detail', true);
       loadOrders(ac);
-      logAction('從報表查看', ac + (search ? '(' + search + ')' : ''));
+      logAction('從報表查看', ac + (search ? '(' + search + ')' : '') + (focusOrder && focusOrder.orderId ? '(' + focusOrder.orderId + ')' : ''));
+    }
+
+    // 載入完成後:找到要看的那一筆,切到它所在的分頁、捲過去、框起來幾秒
+    function applyPendingFocus() {
+      if (!pendingFocus) return;
+      const target = pendingFocus;
+      pendingFocus = null;
+      if (view !== 'detail') return; // 已經離開訂單明細
+      // 只接受唯一的一筆(備用的「填單時間+門市」比對若撞到兩筆,寧可不捲也不捲錯)
+      const hits = allOrders.filter(function (x) { return sameOrder(target, x); });
+      const o = hits.length === 1 ? hits[0] : null;
+      if (!o) {
+        showToast('找不到這筆訂單，可能剛被更新過，請看下方清單');
+        return;
+      }
+      const tab = isClosed(o) ? 'closed' : 'open';
+      if (tab !== currentTab) { setTab(tab); renderCurrentTab(); }
+      // 直接用畫這筆訂單時建立的卡片(不靠 DOM id,編號裡的特殊字元轉換後撞名也不會找錯)
+      const card = cardByOrder.get(o);
+      if (!card || !card.isConnected) return;
+      let reduce = false;
+      try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { reduce = false; }
+      // 鍵盤／螢幕閱讀器:焦點也移到這張卡片
+      card.setAttribute('tabindex', '-1');
+      try { card.focus({ preventScroll: true }); } catch (e) { card.focus(); }
+      // 卡片頂端對齊、留出固定頁首的高度(矮螢幕上標題和編號才不會被蓋住)
+      const bar = document.querySelector('.appbar');
+      card.style.scrollMarginTop = ((bar ? bar.offsetHeight : 0) + 8) + 'px';
+      card.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+      card.classList.add('flash');
+      setTimeout(function () { card.classList.remove('flash'); }, 3000);
     }
 
     // ===== 畫面狀態:提示 / 載入中 / 錯誤 =====
@@ -3765,25 +3902,40 @@
     // 訂單明細
     // =====================================================================
     // preloaded:登入時一起帶回的資料(有的話直接用,不再打 API)
+    // 'ok' 才重畫清單:載入中保留載入畫面、失敗保留錯誤與重試按鈕(搜尋、切分頁都不會拿舊資料蓋掉)
+    let ordersState = 'ok'; // 'loading' | 'error' | 'ok'
+    // 明細的狀態訊息只在明細畫面顯示(已經回到報表就不改上方狀態列)
+    function setDetailStatus(text) { if (view === 'detail') setStatus(text); }
     function loadOrders(acEmail, preloaded) {
+      // 換了一位 AC:先清掉上一位的資料和數字
+      if (acEmail !== currentAc) {
+        allOrders = [];
+        updateTabCounts();
+        $('stats').innerHTML = '';
+        $('searchHint').hidden = true;
+      }
       currentAc = acEmail;
       stale.detail = false;
       $('acView').hidden = false;
       const fresh = latestOnly('orders');
       if (preloaded) {
+        ordersState = 'ok';
         fresh(onOrdersLoaded)(preloaded);
         return;
       }
-      setStatus('載入中…');
+      ordersState = 'loading';
+      $('searchHint').hidden = true;
+      setDetailStatus('載入中…');
       showSkeleton('list');
       clearTimeout(loadingTimeout);
       loadingTimeout = setTimeout(function () {
-        setStatus('已等待超過 10 秒，仍在等待回應…');
+        setDetailStatus('已等待超過 10 秒，仍在等待回應…');
       }, 10000);
 
       gasCall('getOrdersForAc', { ac: acEmail }).then(fresh(onOrdersLoaded)).catch(fresh(function (err) {
+        ordersState = 'error';
         clearTimeout(loadingTimeout);
-        setStatus('載入失敗');
+        setDetailStatus('載入失敗');
         showError('list', err.message, function () { loadOrders(acEmail); });
       }));
     }
@@ -3791,10 +3943,12 @@
     function onOrdersLoaded(result) {
       clearTimeout(loadingTimeout);
       if (!result || !result.success) {
-        setStatus('載入失敗');
+        ordersState = 'error';
+        setDetailStatus('載入失敗');
         showError('list', result ? result.error : '後端回傳空值', function () { loadOrders(currentAc); });
         return;
       }
+      ordersState = 'ok';
       markUpdated('detail');
       allOrders = result.orders || [];
       if (autoTab) {
@@ -3804,6 +3958,7 @@
         if (!hasOpen && hasClosed) setTab('closed');
       }
       renderCurrentTab();
+      applyPendingFocus();
     }
 
     function matchesSearch(o) {
@@ -3822,20 +3977,48 @@
     }
 
     function renderCurrentTab() {
+      if (ordersState !== 'ok') return; // 還在讀或讀失敗:保留載入中／錯誤畫面
       updateTabCounts();
       renderStats();
       const source = allOrders.filter(function (o) { return isClosed(o) === (currentTab === 'closed'); }).sort(byDiningDate);
+      updateSearchHint();
       renderList(source.filter(matchesSearch));
     }
 
+    // 有搜尋字:顯示「搜尋結果 N 筆(未結案共 M 筆)」,讓人知道其他卡片是被搜尋藏起來的
+    function updateSearchHint() {
+      const source = allOrders.filter(function (o) { return isClosed(o) === (currentTab === 'closed'); });
+      const shown = source.filter(matchesSearch).length;
+      $('searchHint').hidden = !searchKeyword;
+      $('searchHintText').textContent = searchKeyword ? '搜尋結果 ' + shown + ' 筆（' + (currentTab === 'closed' ? '已結案' : '未結案') + '共 ' + source.length + ' 筆）' : '';
+    }
+
+    $('searchClearBtn').addEventListener('click', function () {
+      $('searchInput').value = '';
+      searchKeyword = '';
+      autoTab = false;
+      pendingFocus = null;
+      renderCurrentTab();
+      $('searchInput').focus();
+    });
+
     // 儲存成功後只更新這一張卡片(不重畫整個清單),其他卡片還沒儲存的修改才不會被清掉
     function refreshSavedCard(order, card) {
+      if (ordersState !== 'ok') return; // 已經在重新讀取(例如換了 AC):讀完會整個重畫
+      if (allOrders.indexOf(order) === -1) return; // 清單已經重讀過,這筆是舊物件
       updateTabCounts();
       renderStats();
+      updateSearchHint();
+      // 儲存期間切過分頁:原本的卡片已被重建,改用目前畫面上的那張
+      const cur = cardByOrder.get(order);
+      if (cur && cur.isConnected) card = cur;
+      // 這筆不在畫面上就不動(不整頁重畫,免得清掉其他卡片還沒儲存的輸入)
       if (!card || !card.isConnected) return;
       const stillHere = isClosed(order) === (currentTab === 'closed') && matchesSearch(order);
       if (stillHere) {
-        card.replaceWith(buildCard(order));
+        const fresh = buildCard(order);
+        card.replaceWith(fresh);
+        cardByOrder.set(order, fresh);
         return;
       }
       // 結案 / 重新開啟後換到另一個分頁了:從這頁移除
@@ -3887,8 +4070,14 @@
         return;
       }
 
-      orders.forEach(function (o) { list.appendChild(buildCard(o)); });
+      orders.forEach(function (o) {
+        const card = buildCard(o);
+        cardByOrder.set(o, card);
+        list.appendChild(card);
+      });
     }
+    // 訂單物件 → 目前畫面上的卡片(報表點某一筆時用來找到那張)
+    let cardByOrder = new WeakMap();
 
     // 用餐日期倒數標籤
     function dueTag(o) {
@@ -4182,8 +4371,11 @@
       });
     }
 
+    // 報表的載入狀態:切到別頁再回來時,狀態列依這個恢復(不會在載入中／失敗時顯示舊的更新時間)
+    let reportState = 'ok'; // 'loading' | 'error' | 'ok'
     function loadReport() {
       stale.report = false;
+      reportState = 'loading';
       setStatus('載入報表中…');
       if (reportOrders) {
         // 重新整理時保留舊畫面(變淡),不閃骨架
@@ -4197,10 +4389,12 @@
       function onReport(res) {
         $('reportBody').classList.remove('is-stale');
         if (!res || !res.success) {
-          setStatus('載入失敗');
+          reportState = 'error';
+          if (view === 'report') setStatus('載入失敗');
           showError('reportBody', res ? res.error : '後端回傳空值', loadReport);
           return;
         }
+        reportState = 'ok';
         reportOrders = res.orders || [];
         reportOps = res.ops || null;
         refreshMailBadge();
@@ -4218,7 +4412,8 @@
       }
       gasCall('getReport').then(fresh(onReport)).catch(fresh(function (err) {
         $('reportBody').classList.remove('is-stale');
-        setStatus('載入失敗');
+        reportState = 'error';
+        if (view === 'report') setStatus('載入失敗');
         showError('reportBody', err.message, loadReport);
       }));
     }
@@ -4350,6 +4545,7 @@
 
     function renderReport() {
       if (!reportOrders) return;
+      if (reportState === 'error') return; // 保留錯誤與「重試」,重試成功後再依目前篩選重畫
       const body = $('reportBody');
       body.innerHTML = '';
       $('tooltip').hidden = true;
@@ -4615,7 +4811,8 @@
         btn.appendChild(side);
         if (o.ac) {
           btn.addEventListener('click', function () {
-            openDetail(o.ac, hasValue(o.customer) ? o.customer : o.storeName);
+            if (reportState !== 'ok') return; // 報表正在重新整理:舊資料不能點(鍵盤也一樣)
+            openDetail(o.ac, '', o);
           });
         }
         list.appendChild(btn);
