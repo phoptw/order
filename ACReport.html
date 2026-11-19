@@ -2242,13 +2242,60 @@
     }
 
     #mailTabRow.segmented {
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
+    }
+
+    /* 啟用狀況:每位 RC / AC 一張小卡 */
+    .usage-card .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .usage-tag {
+      flex: none;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .usage-tag.none { color: var(--red); background: var(--red-soft); }
+    .usage-tag.half { color: var(--st-talking); background: var(--st-talking-soft); }
+    .usage-tag.ok { color: var(--green); background: var(--green-soft); }
+
+    .usage-meta {
+      margin-top: 6px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-2);
+    }
+
+    .usage-warn {
+      margin-top: 4px;
+      font-size: 13px;
+      color: var(--red);
+    }
+
+    @media (max-width: 480px) {
+      #mailTabRow .tab-long {
+        display: none;
+      }
+
+      #mailTabRow .seg-btn {
+        font-size: 13px;
+        gap: 3px;
+        padding-left: 4px;
+        padding-right: 4px;
+      }
     }
 
     @media (max-width: 400px) {
       #mailTabRow .seg-btn {
-        font-size: 14px;
-        gap: 4px;
+        font-size: 12px;
+        gap: 2px;
       }
 
       #mailTabRow .count {
@@ -2616,8 +2663,9 @@
       <div class="toolbar">
         <div class="segmented" id="mailTabRow" role="tablist">
           <button class="seg-btn active" data-tab="pending" role="tab">待寄送 <span class="count" id="pendingTabCount">0</span></button>
-          <button class="seg-btn" data-tab="unassigned" role="tab">待分配門市 <span class="count" id="unassignedTabCount">0</span></button>
+          <button class="seg-btn" data-tab="unassigned" role="tab">待分配<span class="tab-long">門市</span> <span class="count" id="unassignedTabCount">0</span></button>
           <button class="seg-btn" data-tab="sent" role="tab">已寄出</button>
+          <button class="seg-btn" data-tab="usage" role="tab">啟用狀況</button>
         </div>
         <div class="mail-controls" id="mailPendingControls">
           <label class="search">
@@ -2634,6 +2682,7 @@
       <main class="list" id="mailList"></main>
       <main class="list" id="unassignedList" hidden></main>
       <main class="list" id="sentList" hidden></main>
+      <main class="list" id="usageList" hidden></main>
       <!-- 選好門市的訂單一次指派 -->
       <div class="bulk-bar" id="bulkAssignBar" hidden>
         <span class="bulk-text" id="bulkAssignText"></span>
@@ -2674,7 +2723,7 @@
     // 標記帶同一個 markToken、撤銷核對標記時間、指派與更新狀態遇到「已經是要存的值」直接算成功
     // (操作紀錄 logAcAction 重送會多一列,不重試;退回待分配 unassignStore 也不重試:
     //  第一次其實成功、期間別人又指派回同一家時,重送會把新的指派退掉,改成提示並重新讀取)
-    const RETRYABLE_ACTIONS = ['login', 'getReport', 'getOrdersForAc', 'getPendingOrders', 'getUnassignedOrders', 'getRecentSent',
+    const RETRYABLE_ACTIONS = ['login', 'getReport', 'getOrdersForAc', 'getPendingOrders', 'getUnassignedOrders', 'getRecentSent', 'getUsage',
       'markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'updateNodeStatus'];
     const WRITE_ACTIONS = ['markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'unassignStore', 'updateNodeStatus'];
     // 等多久沒回應就中斷(手機網路卡住時按鈕不會一直停在處理中)
@@ -3692,7 +3741,7 @@
       reportOps = null;
       initialReport = null;
       // 畫面上已經顯示過的訂單、報表、信件內容也要清掉(只藏起來的話,用開發者工具還看得到)
-      ['list', 'stats', 'reportBody', 'mailList', 'unassignedList'].forEach(function (id) { $(id).innerHTML = ''; });
+      ['list', 'stats', 'reportBody', 'mailList', 'unassignedList', 'usageList'].forEach(function (id) { $(id).innerHTML = ''; });
       $('acSelect').innerHTML = '';
       $('toast-wrap').innerHTML = '';
       setIdentity('', '');
@@ -5082,7 +5131,7 @@
       return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
     }
     let mailFilter = 'all';    // 'all' | 'missing' | 'overdue'
-    let mailTab = 'pending';   // 'pending' | 'unassigned' | 'sent'
+    let mailTab = 'pending';   // 'pending' | 'unassigned' | 'sent' | 'usage'
     const ASSIGN_BATCH_MAX = 100; // 「一次指派」每次最多幾筆(跟後端 assignStores 的上限一樣)
     let unassignedHasNearest = false; // 目前的待分配清單是否已算好最近門市
     let unassignedBusy = false;
@@ -5117,12 +5166,14 @@
       $('mailList').hidden = !isPending;
       $('unassignedList').hidden = tab !== 'unassigned';
       $('sentList').hidden = tab !== 'sent';
+      $('usageList').hidden = tab !== 'usage';
       updateBulkBar();
       window.scrollTo(0, 0);
       // 第一次打開「待分配門市」才查最近門市
       if (tab === 'unassigned' && mailLoaded && !unassignedHasNearest && !unassignedBusy) loadUnassigned();
-      // 「已寄出」每次打開都重新讀(標記完成後才會出現在這裡)
+      // 「已寄出」「啟用狀況」每次打開都重新讀
       if (tab === 'sent' && mailLoaded) loadSent();
+      if (tab === 'usage' && mailLoaded) loadUsage();
     }
 
     function resetMail() {
@@ -5134,6 +5185,7 @@
       mailCounts.pending = null;
       mailCounts.unassigned = null;
       $('sentList').innerHTML = '';
+      $('usageList').innerHTML = '';
       clearTimeout(mailLoadingTimeout);
       clearTimeout(unassignedLoadingTimeout);
       mailFilter = 'all';
@@ -5177,6 +5229,7 @@
       loadPending();
       loadUnassigned();
       if (mailTab === 'sent') loadSent();
+      if (mailTab === 'usage') loadUsage();
     }
 
     function timeAgo(ms) {
@@ -5687,6 +5740,81 @@
       })).catch(fresh(function (err) {
         showError('sentList', err && err.message ? err.message : String(err), loadSent);
       }));
+    }
+
+    // ----- 啟用狀況:門市資料表上每位 RC / AC 有沒有登入過、AC 有沒有開手機通知 -----
+    function loadUsage() {
+      showSkeleton('usageList');
+      const fresh = latestOnly('usage');
+      gasCall('getUsage').then(fresh(function (result) {
+        if (!result || !result.success) {
+          showError('usageList', result ? result.error : '後端回傳空值', loadUsage);
+          return;
+        }
+        renderUsage(result.people || []);
+      })).catch(fresh(function (err) {
+        showError('usageList', err && err.message ? err.message : String(err), loadUsage);
+      }));
+    }
+
+    // 'yyyy/MM/dd HH:mm':今年的省略年份,跨年的才顯示
+    function usageStamp(s) {
+      const y = String(new Date(Date.now() + 8 * 3600e3).getUTCFullYear()) + '/';
+      return String(s).indexOf(y) === 0 ? String(s).slice(y.length) : String(s);
+    }
+
+    // 0 = 還沒登入、1 = 登入了但沒開通知(只有 AC)、2 = 完成
+    function usageLevel(p) {
+      if (!p.opens) return 0;
+      if (p.role === 'ac' && !p.pushDevices) return 1;
+      return 2;
+    }
+
+    function renderUsage(people) {
+      const list = $('usageList');
+      list.innerHTML = '';
+      if (!people.length) {
+        showState('usageList', '📭', '門市資料表上沒有 RC 或 AC', '');
+        return;
+      }
+      list.appendChild(el('p', 'sent-hint', '依門市資料表列出每位 RC／AC。「登入」是打開系統的次數；AC 要開手機通知才收得到新訂單提醒（RC 不用開）。'));
+      [['ac', 'AC'], ['rc', 'RC']].forEach(function (g) {
+        const group = people.filter(function (p) { return p.role === g[0]; });
+        if (!group.length) return;
+        group.sort(function (a, b) {
+          return usageLevel(a) - usageLevel(b) || String(a.name).localeCompare(String(b.name), 'zh-Hant');
+        });
+        const loggedIn = group.filter(function (p) { return p.opens > 0; }).length;
+        let summary = '已登入 ' + loggedIn + '／' + group.length;
+        if (g[0] === 'ac') summary += '・已開通知 ' + group.filter(function (p) { return p.pushDevices > 0; }).length + '／' + group.length;
+        const head = el('div', 'sent-day', g[1]);
+        head.appendChild(el('span', 'n', summary));
+        list.appendChild(head);
+        group.forEach(function (p) { list.appendChild(buildUsageCard(p)); });
+      });
+    }
+
+    function buildUsageCard(p) {
+      const card = el('article', 'card sent-card usage-card');
+      const head = el('div', 'card-head');
+      head.appendChild(el('h3', 'card-title', p.name));
+      const level = usageLevel(p);
+      head.appendChild(el('span', 'usage-tag ' + ['none', 'half', 'ok'][level],
+        level === 0 ? '未登入' : level === 1 ? '未開通知' : p.role === 'ac' ? '已啟用' : '已登入'));
+      card.appendChild(head);
+      const parts = ['負責 ' + p.stores + ' 家門市'];
+      if (p.opens) {
+        parts.push('登入 ' + p.opens + ' 次');
+        if (p.first) parts.push('首次 ' + usageStamp(p.first));
+        if (p.last) parts.push('最後使用 ' + usageStamp(p.last));
+      }
+      if (p.role === 'ac') parts.push('通知裝置 ' + (p.pushDevices || 0) + ' 台');
+      card.appendChild(el('div', 'usage-meta', parts.join('・')));
+      if (p.noEmail) {
+        card.appendChild(el('div', 'usage-warn', '門市資料表有 ' + p.noEmail + ' 家沒填' + (p.role === 'ac' ? ' AC' : ' RC') + ' 信箱' +
+          (p.noEmail === p.stores ? '，無法用信箱登入' : '')));
+      }
+      return card;
     }
 
     let sentOrders = [];
