@@ -4057,15 +4057,25 @@
       const counts = {};
       STATUSES.forEach(function (s) { counts[s] = 0; });
       let wonSum = 0;
-      let urgent = 0;
+      // 未結案的兩種狀態:其中幾筆「用餐日已過」、幾筆「快到用餐日」(跟報表的待處理同一個定義)
+      const due = {};
+      OPEN_STATUSES.forEach(function (s) { due[s] = { past: 0, soon: 0 }; });
       allOrders.forEach(function (o) {
         if (counts[o.status] !== undefined) counts[o.status]++;
         if (o.status === STATUS_WON && o.dealAmount && !isNaN(Number(o.dealAmount))) wonSum += Number(o.dealAmount);
-        if (o.status === STATUS_NOT_ORDERED && typeof o.daysUntil === 'number' && o.daysUntil <= 2) urgent++;
+        if (due[o.status] && typeof o.daysUntil === 'number') {
+          if (o.daysUntil < 0) due[o.status].past++;
+          else if (o.daysUntil <= 2) due[o.status].soon++;
+        }
       });
 
       const extras = {};
-      extras[STATUS_NOT_ORDERED] = urgent ? urgent + ' 筆將到期' : '';
+      OPEN_STATUSES.forEach(function (s) {
+        const bits = [];
+        if (due[s].past) bits.push('已過 ' + due[s].past);
+        if (due[s].soon) bits.push('快到 ' + due[s].soon);
+        extras[s] = bits.join('・');
+      });
       extras[STATUS_WON] = wonSum ? formatMoney(wonSum) : '';
 
       const box = $('stats');
@@ -4522,7 +4532,7 @@
     // 待處理的三類(2026-11-18 定):互不重疊,一筆只算一類,依序判斷;每一類對應 AC 要做的事
     //   overdue     用餐日已過、還沒結案      → 回報成交或流失
     //   soon        今天～2 天內用餐、還沒成交 → 確認訂單
-    //   uncontacted 寄出超過 24 小時還是「尚未聯繫」→ 打電話(跟 AC 推播、RC 雙週報表同一個門檻)
+    //   uncontacted 派單超過 24 小時還是「尚未聯繫」→ 請門市聯繫客戶(跟 AC 推播、RC 雙週報表同一個門檻)
     const UNCONTACTED_HOURS = 24;
     const TODO_KINDS = ['overdue', 'soon', 'uncontacted'];
     const TODO_LABEL = { overdue: '用餐日已過', soon: '快到用餐日', uncontacted: '未聯繫' };
@@ -4553,7 +4563,7 @@
 
     // 依 keyFn 分組統計;sample 保留第一筆訂單(門市表要拿它的 AC)
     function aggregate(orders, keyFn) {
-      const groups = {};
+      const groups = Object.create(null); // 分組名稱來自資料(例如單位類別),不能撞到 constructor 這類內建屬性
       const order = [];
       orders.forEach(function (o) {
         const k = keyFn(o);
@@ -4608,6 +4618,21 @@
       ).sort(function (a, b) { return a.key < b.key ? -1 : 1; });
       if (months.length >= 2) body.appendChild(buildMonthPanel(months));
 
+      // 訂購單位的類別(S、A、B…):看哪一類客戶成交率高、金額大
+      body.appendChild(buildTablePanel('unit', '各單位類別表現', aggregate(orders, function (o) { return nameOrNone(o.unitClass); }), {
+        nameLabel: '單位類別',
+        emptyName: '（未填類別）',
+        // 代碼(C、S…)旁邊加上顧客填的類別名稱:公司（C）;沒有對照代碼的(例如「其他」)名稱跟代碼一樣,只顯示一次
+        nameOf: function (g) {
+          const t = g.sample.unitType || '';
+          return t && t !== g.key ? t + '（' + g.key + '）' : g.key;
+        },
+        extra: {
+          label: '平均成交金額',
+          get: function (g) { return g.won && g.amount ? formatMoney(Math.round(g.amount / g.won)) : '—'; }
+        }
+      }));
+
       if (role === 'admin' && !reportFilter.rc && !$('rcFilter').hidden) {
         body.appendChild(buildTablePanel('rc', '各 RC 表現', aggregate(orders, function (o) { return nameOrNone(o.rc); }), {
           nameLabel: 'RC',
@@ -4646,7 +4671,7 @@
         '統計範圍：已寄出通知、已分配門市的訂單；期間依「用餐日期」篩選。' +
         '成交率 ＝ 已成交 ÷（已成交＋已流失），只計算已結案的訂單。' +
         '待處理分三類，一筆只算一類：「用餐日已過」＝ 用餐日過了還沒結案（請回報成交或流失）；' +
-        '「快到用餐日」＝ 今天到 2 天內要用餐、還沒成交（請確認訂單）；' +
+        '「快到用餐日」＝ 今天到 2 天內要用餐、還沒成交（請門市確認訂單）；' +
         '「未聯繫」＝ 派單超過 24 小時還是尚未聯繫（請門市聯繫客戶）。' +
         'AC 的每日待辦摘要只要有訂單「用餐日已過仍未結案」或「派單超過 24 小時仍未聯繫」（不管歸在哪一類），整封信就會副本給 RC' +
         '（信裡的訂單都屬於同一位 RC、而且找得到 RC 的信箱時才副本；跨兩位 RC 或認不出 RC 就不副本）。'));
@@ -4713,7 +4738,7 @@
       const todo = el('section', 'kpis three');
       todo.setAttribute('aria-label', '待處理訂單');
       todo.appendChild(focusKpi(kpi('用餐日已過', s.overdue, '還沒結案，請回報結果', { warn: s.overdue > 0, icon: 'alert' }), 'overdue', s.overdue));
-      todo.appendChild(focusKpi(kpi('快到用餐日', s.soon, '2 天內用餐，請確認訂單', { warn: s.soon > 0, icon: 'clock' }), 'soon', s.soon));
+      todo.appendChild(focusKpi(kpi('快到用餐日', s.soon, '2 天內用餐，請門市確認訂單', { warn: s.soon > 0, icon: 'clock' }), 'soon', s.soon));
       todo.appendChild(focusKpi(kpi('未聯繫', s.uncontacted, '派單超過 24 小時，請門市聯繫客戶', { warn: s.uncontacted > 0, icon: 'phone' }), 'uncontacted', s.uncontacted));
       wrap.appendChild(todo);
       return wrap;
@@ -4946,7 +4971,7 @@
         return b.total - a.total;
       });
 
-      const p = panel(title, groups.length + (id === 'store' ? ' 間' : ' 位') + (opts.hint ? '・' + opts.hint : ''));
+      const p = panel(title, groups.length + (id === 'store' ? ' 間' : id === 'unit' ? ' 類' : ' 位') + (opts.hint ? '・' + opts.hint : ''));
       const wrap = el('div', 'tbl-wrap');
       const table = el('table', 'tbl');
       const thead = el('thead');
@@ -4988,7 +5013,7 @@
       const shown = opts.limit ? rows.slice(0, opts.limit) : rows;
       shown.forEach(function (g) {
         const tr = el('tr', opts.onClick ? 'clickable' : '');
-        const name = g.key === NONE_KEY ? (opts.emptyName || '—') : g.key;
+        const name = g.key === NONE_KEY ? (opts.emptyName || '—') : (opts.nameOf ? opts.nameOf(g) : g.key);
         tr.appendChild(el('td', 'name-cell' + (g.key === NONE_KEY ? ' muted' : ''), name));
         if (opts.extra) tr.appendChild(el('td', 'left muted', opts.extra.get(g)));
         tr.appendChild(el('td', null, g.total));
