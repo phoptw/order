@@ -1804,17 +1804,19 @@
     }
 
     /* 退回待分配:次要中的次要,不要跟「已寄送」搶眼 */
-    #mailView .unassign-btn {
+    #mailView .unassign-btn,
+    #mailView .skip-btn {
       color: var(--text-2);
       font-weight: 500;
     }
 
-    #mailView .unassign-btn:hover:not(:disabled) {
+    #mailView .unassign-btn:hover:not(:disabled),
+    #mailView .skip-btn:hover:not(:disabled) {
       border-color: var(--text-2);
       color: var(--text);
     }
 
-    #mailView .btn-secondary:not(.unassign-btn):hover:not(:disabled) {
+    #mailView .btn-secondary:not(.unassign-btn):not(.skip-btn):hover:not(:disabled) {
       border-color: var(--green);
       color: var(--green);
     }
@@ -2814,7 +2816,8 @@
     //  第一次其實成功、期間別人又指派回同一家時,重送會把新的指派退掉,改成提示並重新讀取)
     const RETRYABLE_ACTIONS = ['login', 'getReport', 'getOrdersForAc', 'getPendingOrders', 'getUnassignedOrders', 'getRecentSent', 'getUsage',
       'markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'updateNodeStatus'];
-    const WRITE_ACTIONS = ['markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'unassignStore', 'updateNodeStatus'];
+    // 略過 skipOrder / 撤銷略過 unskipOrder 也不重試(重送會被當成「別人先略過了」而拿不到撤銷),失敗就提示並重新讀取
+    const WRITE_ACTIONS = ['markAsSent', 'unmarkAsSent', 'assignStore', 'assignStores', 'unassignStore', 'skipOrder', 'unskipOrder', 'updateNodeStatus'];
     // 等多久沒回應就中斷(手機網路卡住時按鈕不會一直停在處理中)
     // 不能設太短:試算表大時 Google 本來就要 20~40 秒,太早中斷再重送只會讓伺服器多做一次、更慢
     const READ_TIMEOUT_MS = 90000;
@@ -2986,7 +2989,8 @@
       pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
       undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
       bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
-      menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>'
+      menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+      ban: '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>'
     };
 
     function svg(name, extraClass) {
@@ -5586,8 +5590,13 @@
       backBtn.type = 'button';
       setUnassignLabel(backBtn, false);
       backBtn.disabled = noId;
-      backBtn.addEventListener('click', function () { unassignPending(o, backBtn, [outlookBtn, doneBtn], card); });
+      backBtn.addEventListener('click', function () { unassignPending(o, backBtn, [outlookBtn, doneBtn, skipBtn], card); });
       actions.appendChild(backBtn);
+      // 重複填寫等不用處理的:略過(5 秒內可撤銷)
+      const skipBtn = makeSkipBtn();
+      skipBtn.disabled = noId;
+      skipBtn.addEventListener('click', function () { skipOrderUi(o, 'pending', card, skipBtn, [outlookBtn, doneBtn, backBtn]); });
+      actions.appendChild(skipBtn);
       card.appendChild(actions);
 
       // 信件詳細內容(收件人/副本/主旨/內文)預設收合,需要時再展開查看或複製
@@ -5745,15 +5754,18 @@
     function markDone(order, btn, outlookBtn, card) {
       // 標記中、撤銷倒數中都不能退回待分配(撤銷成功或標記失敗才恢復)
       const backBtn = card.querySelector('.unassign-btn');
+      const skipBtn = card.querySelector('.skip-btn');
       btn.disabled = true;
       outlookBtn.disabled = true;
       if (backBtn) backBtn.disabled = true;
+      if (skipBtn) skipBtn.disabled = true;
       setDoneLabel(btn, 'busy');
 
       function resetButtons() {
         btn.disabled = false;
         outlookBtn.disabled = false;
         if (backBtn) backBtn.disabled = false;
+        if (skipBtn) skipBtn.disabled = false;
         card.classList.remove('is-done');
         setDoneLabel(btn, 'idle');
       }
@@ -5869,6 +5881,99 @@
             return;
           }
           alert('退回失敗: ' + err.message);
+          reset();
+        });
+    }
+
+    // ----- 略過訂單(重複填寫、測試單…)-----
+    // 後端把發信狀態寫成「skip-重複 時間」:不會出現在待分配、待寄送,也不會寄給門市、算進報表;資料不刪,5 秒內可撤銷
+    function makeSkipBtn() {
+      const b = el('button', 'btn btn-secondary btn-small btn-block skip-btn');
+      b.type = 'button';
+      setSkipLabel(b, false);
+      return b;
+    }
+    function setSkipLabel(btn, busy) {
+      if (busy) {
+        btn.textContent = '處理中…';
+        return;
+      }
+      btn.innerHTML = svg('ban', 'ic-sm');
+      btn.appendChild(document.createTextNode('重複或不用處理？略過這筆'));
+    }
+
+    function skipOrderUi(order, listName, card, btn, otherBtns) {
+      const label = listName === 'pending' ? order.storeName : orderLabel(order);
+      if (!confirm('要略過「' + label + '」這筆訂單嗎？\n\n例如顧客重複填寫。略過後不會出現在待分配、待寄送，也不會寄給門市或算進報表；資料不會刪除，5 秒內可撤銷。')) return;
+      // 送出中:這張卡片的其他按鈕、指派門市一起鎖住(一次指派也不會把它算進去)
+      const select = card._assign ? card._assign.select : null;
+      const wasDisabled = otherBtns.map(function (b) { return b.disabled; });
+      btn.disabled = true;
+      otherBtns.forEach(function (b) { b.disabled = true; });
+      if (select) { lockAssignSelect(select, true); updateBulkBar(); }
+      setSkipLabel(btn, true);
+      function reset() {
+        btn.disabled = false;
+        otherBtns.forEach(function (b, i) { b.disabled = wasDisabled[i]; });
+        if (select) {
+          lockAssignSelect(select, false);
+          if (card._assign) card._assign.btn.disabled = !select.value;
+          updateBulkBar();
+        }
+        setSkipLabel(btn, false);
+      }
+      function reloadList() {
+        if (listName === 'pending') loadPending();
+        else loadUnassigned(undefined, 'addNew');
+      }
+      gasCall('skipOrder', orderRef(order))
+        .then(function (res) {
+          if (!res || !res.success) {
+            alert('略過失敗: ' + (res ? res.error : '未知錯誤'));
+            reset();
+            return;
+          }
+          noteMovedOut(listName, order);
+          if (listName === 'pending') {
+            removeMailOrder(order);
+            removeCard(liveCard(card), 'mailList', applyMailFilters);
+          } else {
+            dropUnassignedOrder(order);
+            setUnassignedTabCount(unassignedOrders.length);
+            removeCard(liveCard(card), 'unassignedList', emptyUnassigned);
+            updateBulkBar();
+          }
+          invalidateReport();
+          // 本來就被略過(別人先按了):不提供撤銷,免得撤掉別人的
+          if (res.already) {
+            showToast('「' + label + '」之前已經略過了');
+            return;
+          }
+          showUndoToast('已略過「' + label + '」', function onUndo() {
+            gasCall('unskipOrder', Object.assign({ skipMark: res.skipMark }, orderRef(order)))
+              .then(function (r) {
+                if (r && r.success) {
+                  noteMovedIn(listName, order);
+                  invalidateReport();
+                  showToast('已撤銷略過「' + label + '」');
+                } else {
+                  alert('撤銷失敗: ' + (r ? r.error : '未知錯誤') + '\n清單會重新讀取，顯示目前的實際狀態');
+                }
+                reloadList();
+              })
+              .catch(function (err) {
+                alert('撤銷失敗: ' + err.message + '\n清單會重新讀取，顯示目前的實際狀態');
+                reloadList();
+              });
+          }, function onExpire() {}, UNDO_MS);
+        })
+        .catch(function (err) {
+          if (err && err.retryable) {
+            alert('略過失敗: ' + err.message + '\n無法確認是否已略過，清單會重新讀取，顯示目前的實際狀態');
+            reloadAfterUnsureWrite();
+            return;
+          }
+          alert('略過失敗: ' + err.message);
           reset();
         });
     }
@@ -6497,6 +6602,9 @@
       confirmBtn.disabled = true;
       setAssignLabel(confirmBtn, '');
       actions.appendChild(confirmBtn);
+      const skipBtn = makeSkipBtn();
+      skipBtn.addEventListener('click', function () { skipOrderUi(o, 'unassigned', card, skipBtn, [confirmBtn]); });
+      actions.appendChild(skipBtn);
       card.appendChild(actions);
 
       select.addEventListener('change', function () {
@@ -6769,6 +6877,8 @@
         if (b.dataset.match) b.disabled = locked;
       });
       card.querySelectorAll('.store-input, .cand-btn').forEach(function (b) { b.disabled = locked; });
+      // 指派送出中不能略過(略過送出中也不能指派):同一筆不會兩個動作同時進行
+      card.querySelectorAll('.skip-btn').forEach(function (b) { b.disabled = locked; });
     }
 
     function setAssignLabel(btn, storeName) {
